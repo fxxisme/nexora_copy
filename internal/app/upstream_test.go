@@ -9,8 +9,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	http "github.com/bogdanfinn/fhttp"
+	tlsclient "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 type upstreamDoerFunc func(req *http.Request) (*http.Response, error)
@@ -31,6 +34,30 @@ func upstreamTestResponseWithHeader(status int, body string, header http.Header)
 		StatusCode: status,
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     header,
+	}
+}
+
+func TestDefaultUpstreamIdentityUsesChrome146(t *testing.T) {
+	t.Setenv("CHATGPT2API_UPSTREAM_TRANSPORT", "tls-client")
+	t.Setenv("CHATGPT2API_TLS_PROFILE", "")
+	t.Setenv("CHATGPT2API_USER_AGENT", "")
+	t.Setenv("CHATGPT2API_SEC_CH_UA", "")
+	client, err := NewUpstreamClientForAccount(Account{AccessToken: "test-token"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := client.client.(tlsclient.HttpClient); !ok {
+		t.Fatalf("default transport = %T, want tls-client", client.client)
+	}
+	if upstreamTLSProfile().GetClientHelloStr() != profiles.Chrome_146.GetClientHelloStr() {
+		t.Fatal("default TLS profile is not Chrome 146")
+	}
+	headers := client.headers("/backend-api/f/conversation", nil)
+	for _, name := range []string{"User-Agent", "Sec-Ch-Ua", "Sec-Ch-Ua-Full-Version", "Sec-Ch-Ua-Full-Version-List"} {
+		value := headers.Get(name)
+		if !strings.Contains(value, "146") || strings.Contains(value, "Edge") {
+			t.Errorf("%s = %q, want Chrome 146 without Edge", name, value)
+		}
 	}
 }
 
@@ -126,11 +153,40 @@ func TestBootstrapRedirectErrorIncludesLocation(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedChatRequirementsSolvesTurnstileWithEmptySourceP(t *testing.T) {
-	dx := base64.StdEncoding.EncodeToString([]byte(`[[3,"ok"]]`))
+func TestAuthenticatedChatRequirementsPrepareFinalizeWithSolver(t *testing.T) {
+	var proofInput string
+	solver := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer solver-key" {
+			t.Errorf("solver Authorization = %q", got)
+		}
+		switch r.URL.Path {
+		case "/health":
+			_, _ = io.WriteString(w, `{"ready":true,"user_agent":"solver-agent","timezone":"America/Los_Angeles","date_string":"Thu Oct 15 2026 06:00:00 GMT-0700 (Pacific Daylight Time)"}`)
+		case "/v1/turnstile":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["dx"] != "challenge" || body["p"] != proofInput {
+				t.Errorf("solver challenge = %#v", body)
+			}
+			requirements, _ := body["requirements"].(map[string]any)
+			if requirements["prepare_token"] != "prepare-token" {
+				t.Errorf("solver requirements = %#v", requirements)
+			}
+			_, _ = io.WriteString(w, `{"token":"solved-token"}`)
+		default:
+			t.Errorf("unexpected solver path %q", r.URL.Path)
+			w.WriteHeader(stdhttp.StatusNotFound)
+		}
+	}))
+	defer solver.Close()
+	upstreamCalls := 0
 	client := &UpstreamClient{
 		token:           "access-token",
 		userAgent:       "test-agent",
+		solverURL:       solver.URL,
+		solverKey:       "solver-key",
 		deviceID:        "device-id",
 		sessionID:       "session-id",
 		secCHUA:         `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`,
@@ -138,18 +194,141 @@ func TestAuthenticatedChatRequirementsSolvesTurnstileWithEmptySourceP(t *testing
 		secCHUAPlatform: `"Windows"`,
 		scriptSources:   []string{defaultPowScript},
 		client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path != "/backend-api/sentinel/chat-requirements" {
-				t.Fatalf("path = %q, want /backend-api/sentinel/chat-requirements", req.URL.Path)
+			upstreamCalls++
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatal(err)
 			}
-			return upstreamTestResponse(200, `{"token":"requirements-token","turnstile":{"required":true,"dx":"`+dx+`"}}`), nil
+			switch req.URL.Path {
+			case "/backend-api/sentinel/chat-requirements/prepare":
+				proofInput, _ = body["p"].(string)
+				if proofInput == "" || req.Header.Get("X-OpenAI-Target-Path") != "" {
+					t.Errorf("prepare headers or proof input invalid")
+				}
+				return upstreamTestResponse(200, `{"prepare_token":"prepare-token","turnstile":{"required":true,"dx":"challenge"}}`), nil
+			case "/backend-api/sentinel/chat-requirements/finalize":
+				if body["prepare_token"] != "prepare-token" || body["turnstile"] != "solved-token" || body["proofofwork"] != "" {
+					t.Errorf("finalize body = %#v", body)
+				}
+				return upstreamTestResponse(200, `{"token":"requirements-token"}`), nil
+			default:
+				t.Fatalf("unexpected upstream path %q", req.URL.Path)
+				return nil, nil
+			}
 		}),
 	}
 	got, err := client.chatRequirements(context.Background())
 	if err != nil {
 		t.Fatalf("chatRequirements returned error: %v", err)
 	}
-	if got.TurnstileToken != "b2s=" {
-		t.Fatalf("TurnstileToken = %q, want b2s=", got.TurnstileToken)
+	if upstreamCalls != 2 || got.Token != "requirements-token" || got.TurnstileToken != "solved-token" {
+		t.Fatalf("calls = %d, requirements = %#v", upstreamCalls, got)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(proofInput, "gAAAAAC"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config []any
+	if err := json.Unmarshal(decoded, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config[1] != "Thu Oct 15 2026 06:00:00 GMT-0700 (Pacific Daylight Time)" {
+		t.Fatalf("proof date = %v", config[1])
+	}
+	if client.timezone != "America/Los_Angeles" {
+		t.Fatalf("solver timezone = %q", client.timezone)
+	}
+}
+
+func TestImageConversationPrepareAndSendStates(t *testing.T) {
+	var prepareTrace string
+	var browserID string
+	client := &UpstreamClient{
+		token:    "access-token",
+		timezone: "America/Los_Angeles",
+		client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode %s: %v", req.URL.Path, err)
+			}
+			if body["model"] != "auto" {
+				t.Errorf("%s model = %v, want auto", req.URL.Path, body["model"])
+			}
+			name, offset, _ := (&UpstreamClient{timezone: "America/Los_Angeles"}).timezoneInfo()
+			if body["timezone"] != name || body["timezone_offset_min"] != float64(offset) {
+				t.Errorf("%s timezone = %v offset = %v", req.URL.Path, body["timezone"], body["timezone_offset_min"])
+			}
+			switch req.URL.Path {
+			case "/backend-api/f/conversation/prepare":
+				prepareTrace = req.Header.Get("X-Oai-Turn-Trace-Id")
+				browserContext, _ := body["browser_context"].(map[string]any)
+				browserID, _ = browserContext["instance_id"].(string)
+				if prepareTrace == "" || body["parent_message_id"] != clientCreatedRoot {
+					t.Errorf("prepare trace = %q, parent = %v", prepareTrace, body["parent_message_id"])
+				}
+				if browserID == "" || body["thinking_effort"] != "standard" {
+					t.Errorf("prepare browser context = %#v, thinking = %v", browserContext, body["thinking_effort"])
+				}
+				if body["client_prepare_state"] != "sent" || body["client_prepare_dispatch"] != "debounced" {
+					t.Errorf("prepare state = %v, dispatch = %v", body["client_prepare_state"], body["client_prepare_dispatch"])
+				}
+				if _, ok := body["partial_query"]; !ok {
+					t.Error("prepare missing partial_query")
+				}
+				return upstreamTestResponse(200, `{"conduit_token":"conduit-token"}`), nil
+			case "/backend-api/f/conversation":
+				browserContext, _ := body["browser_context"].(map[string]any)
+				if browserContext["instance_id"] != browserID || body["thinking_effort"] != "standard" {
+					t.Errorf("send browser context = %#v, thinking = %v", browserContext, body["thinking_effort"])
+				}
+				if req.Header.Get("X-Oai-Mcp-Form-Version") != "2" {
+					t.Errorf("send MCP form version = %q", req.Header.Get("X-Oai-Mcp-Form-Version"))
+				}
+				if body["client_prepare_state"] != "success" || body["parent_message_id"] != clientCreatedRoot {
+					t.Errorf("send state = %v, parent = %v", body["client_prepare_state"], body["parent_message_id"])
+				}
+				if got := req.Header.Get("X-Oai-Turn-Trace-Id"); got != prepareTrace {
+					t.Errorf("send trace = %q, want %q", got, prepareTrace)
+				}
+				messages, _ := body["messages"].([]any)
+				if len(messages) != 1 {
+					t.Fatalf("send messages = %#v", body["messages"])
+				}
+				message, _ := messages[0].(map[string]any)
+				content, _ := message["content"].(map[string]any)
+				parts, _ := content["parts"].([]any)
+				if len(parts) != 1 || parts[0] != "@创建图像 test prompt" {
+					t.Errorf("send content = %#v", content)
+				}
+				if req.Header.Get("X-Conduit-Token") != "conduit-token" {
+					t.Error("send missing conduit token")
+				}
+				return upstreamTestResponse(200, "data: [DONE]\n\n"), nil
+			default:
+				t.Fatalf("unexpected path %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+	cr := chatRequirements{Token: "requirements-token"}
+	conduit, err := client.prepareImage(context.Background(), "test prompt", "gpt-image-2", cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.startImage(context.Background(), "test prompt", "gpt-image-2", cr, conduit, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
+func TestAuthenticatedHeadersIncludeChatGPTAccountID(t *testing.T) {
+	claim, _ := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "account-123"}})
+	token := "header." + base64.RawURLEncoding.EncodeToString(claim) + ".signature"
+	client := &UpstreamClient{token: token}
+	h := client.headers("/backend-api/f/conversation", nil)
+	if got := h.Get("ChatGPT-Account-Id"); got != "account-123" {
+		t.Fatalf("ChatGPT-Account-Id = %q, want account-123", got)
 	}
 }
 
@@ -294,7 +473,8 @@ func TestExtractToolIDsAcceptsAssistantImageResultMessages(t *testing.T) {
 	}
 }
 
-func TestChatRequirementsDoesNotFailWhenTurnstileUnsolved(t *testing.T) {
+func TestChatRequirementsFailsWhenTurnstileSolverUnconfigured(t *testing.T) {
+	upstreamCalls := 0
 	client := &UpstreamClient{
 		token:           "access-token",
 		userAgent:       "test-agent",
@@ -305,18 +485,89 @@ func TestChatRequirementsDoesNotFailWhenTurnstileUnsolved(t *testing.T) {
 		secCHUAPlatform: `"Windows"`,
 		scriptSources:   []string{defaultPowScript},
 		client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
-			return upstreamTestResponse(200, `{"token":"requirements-token","turnstile":{"required":true}}`), nil
+			upstreamCalls++
+			if req.URL.Path != "/backend-api/sentinel/chat-requirements/prepare" {
+				t.Fatalf("unexpected upstream path %q", req.URL.Path)
+			}
+			return upstreamTestResponse(200, `{"prepare_token":"prepare-token","turnstile":{"required":true}}`), nil
 		}),
 	}
-	got, err := client.chatRequirements(context.Background())
+	_, err := client.chatRequirements(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sentinel solver is not configured") {
+		t.Fatalf("chatRequirements error = %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want prepare only", upstreamCalls)
+	}
+}
+
+func TestSentinelProofTokenFormatAndDifficulty(t *testing.T) {
+	proof, err := buildProofToken("seed", "00ff", "test-agent", []string{defaultPowScript}, "test-build", "Thu Oct 15 2026 06:00:00 GMT-0700 (Pacific Daylight Time)")
 	if err != nil {
-		t.Fatalf("chatRequirements returned error: %v", err)
+		t.Fatal(err)
 	}
-	if got.Token != "requirements-token" {
-		t.Fatalf("Token = %q, want requirements-token", got.Token)
+	if !strings.HasPrefix(proof, "gAAAAAB") || !strings.HasSuffix(proof, "~S") {
+		t.Fatalf("invalid proof token framing: %q", proof)
 	}
-	if got.TurnstileToken != "" {
-		t.Fatalf("TurnstileToken = %q, want empty", got.TurnstileToken)
+	payload := strings.TrimSuffix(strings.TrimPrefix(proof, "gAAAAAB"), "~S")
+	if digest := fnv1a32("seed" + payload); digest>>16 > 0x00ff {
+		t.Fatalf("proof digest = %08x, want prefix <= 00ff", digest)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config []any
+	if err := json.Unmarshal(decoded, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config) != 25 || config[4] != "test-agent" || config[6] != "test-build" {
+		t.Fatalf("proof config = %#v", config)
+	}
+}
+
+func TestPowDateMatchesConversationTimezone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+	}{
+		{name: "Asia/Shanghai"},
+		{name: "America/Los_Angeles"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &UpstreamClient{timezone: tc.name}
+			name, offset, _ := client.timezoneInfo()
+			date := client.powDate()
+			location, err := time.LoadLocation(tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, seconds := time.Now().In(location).Zone()
+			wantDate := "GMT+0800 (China Standard Time)"
+			if tc.name == "America/Los_Angeles" {
+				wantDate = "GMT-0800 (Pacific Standard Time)"
+				if seconds == -7*3600 {
+					wantDate = "GMT-0700 (Pacific Daylight Time)"
+				}
+			}
+			if name != tc.name || offset != -seconds/60 || !strings.HasSuffix(date, wantDate) {
+				t.Fatalf("timezone = %q offset=%d date=%q", name, offset, date)
+			}
+			if got := buildPowConfig("test-agent", nil, "test-build", date)[1]; got != date {
+				t.Fatalf("proof date = %q, want %q", got, date)
+			}
+		})
+	}
+}
+
+func TestSentinelSolverRejectsEchoedRequirementsToken(t *testing.T) {
+	solver := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = io.WriteString(w, `{"token":"requirements-token"}`)
+	}))
+	defer solver.Close()
+	client := &UpstreamClient{solverURL: solver.URL}
+	_, err := client.solveSentinelTurnstile(context.Background(), "challenge", "requirements-token", nil)
+	if err == nil || !strings.Contains(err.Error(), "echoed the requirements token") {
+		t.Fatalf("solver error = %v", err)
 	}
 }
 
@@ -444,6 +695,39 @@ func TestNormalizeTextModelOptions(t *testing.T) {
 		if got.Model != tc.wantModel || got.ReasoningLevel != tc.wantReasoning {
 			t.Fatalf("normalizeTextModelOptions(%q) = %#v, want model=%q reasoning=%q", tc.model, got, tc.wantModel, tc.wantReasoning)
 		}
+	}
+}
+
+func TestImageModelSlug(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		want  string
+	}{
+		{model: "gpt-image-2", want: "auto"},
+		{model: "codex-gpt-image-2", want: "codex-gpt-image-2"},
+	} {
+		if got := imageModelSlug(tc.model); got != tc.want {
+			t.Errorf("imageModelSlug(%q) = %q, want %q", tc.model, got, tc.want)
+		}
+	}
+}
+
+func TestAccountImageModelSlug(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		defaultSlug string
+		want        string
+	}{
+		{name: "free", defaultSlug: "auto", want: "auto"},
+		{name: "plus", defaultSlug: "gpt-6-thinking", want: "gpt-6-thinking"},
+		{name: "unknown", want: "auto"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &UpstreamClient{defaultModelSlug: tc.defaultSlug}
+			if got := client.imageModelSlug("gpt-image-2"); got != tc.want {
+				t.Fatalf("imageModelSlug(gpt-image-2) = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

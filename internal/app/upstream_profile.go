@@ -10,11 +10,7 @@ import (
 func upstreamTLSProfile() profiles.ClientProfile {
 	name := strings.ToLower(strings.TrimSpace(os.Getenv("CHATGPT2API_TLS_PROFILE")))
 	if name == "" {
-		// 默认与 Python 版的 Edge 风格请求头保持一致；可通过环境变量切换：chrome_146、chrome_133、chrome_120 等。
-		if profile, ok := profiles.MappedTLSClients["edge_101"]; ok {
-			return profile
-		}
-		return profiles.Chrome_120
+		return profiles.Chrome_146
 	}
 	if profile, ok := profiles.MappedTLSClients[name]; ok {
 		return profile
@@ -23,14 +19,14 @@ func upstreamTLSProfile() profiles.ClientProfile {
 	if profile, ok := profiles.MappedTLSClients[normalized]; ok {
 		return profile
 	}
-	return profiles.Chrome_120
+	return profiles.Chrome_146
 }
 
 func upstreamUserAgent() string {
 	if ua := strings.TrimSpace(os.Getenv("CHATGPT2API_USER_AGENT")); ua != "" {
 		return ua
 	}
-	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 }
 
 func upstreamSecCHUA() string {
@@ -38,15 +34,12 @@ func upstreamSecCHUA() string {
 		return chua
 	}
 	profile := strings.ToLower(strings.TrimSpace(os.Getenv("CHATGPT2API_TLS_PROFILE")))
-	version := "143"
+	version := "146"
 	for _, candidate := range []string{"146", "144", "143", "133", "131", "124", "120", "117", "112", "111", "110", "109", "108", "107", "106", "105", "104", "103"} {
 		if strings.Contains(profile, candidate) {
 			version = candidate
 			break
 		}
 	}
-	if strings.Contains(profile, "edge") || profile == "" {
-		return `"Microsoft Edge";v="` + version + `", "Chromium";v="` + version + `", "Not A(Brand";v="24"`
-	}
-	return `"Google Chrome";v="` + version + `", "Chromium";v="` + version + `", "Not_A Brand";v="24"`
+	return `"Chromium";v="` + version + `", "Google Chrome";v="` + version + `", "Not A(Brand";v="99"`
 }

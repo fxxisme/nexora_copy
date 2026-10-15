@@ -13,6 +13,8 @@ type Config struct {
 	AutoRemoveInvalidAccounts     bool           `json:"auto_remove_invalid_accounts"`
 	LogLevels                     []string       `json:"log_levels"`
 	Proxy                         string         `json:"proxy"`
+	SentinelSolverURL             string         `json:"sentinel_solver_url"`
+	SentinelSolverKey             string         `json:"sentinel_solver_key"`
 	BaseURL                       string         `json:"base_url"`
 	SensitiveWords                []string       `json:"sensitive_words"`
 	GlobalSystemPrompt            string         `json:"global_system_prompt"`
@@ -44,6 +46,7 @@ type Account struct {
 	LastUsedAt        *string           `json:"last_used_at,omitempty"`
 	Mailbox           map[string]any    `json:"mailbox,omitempty"`
 	Password          *string           `json:"password,omitempty"`
+	EmailPassword     *string           `json:"email_password,omitempty"`
 	RefreshToken      *string           `json:"refresh_token,omitempty"`
 	IDToken           *string           `json:"id_token,omitempty"`
 	AccountID         *string           `json:"account_id,omitempty"`

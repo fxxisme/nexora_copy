@@ -85,7 +85,8 @@ func accountLabel(a Account) string {
 
 func isSensitiveKey(key string) bool {
 	k := strings.ToLower(strings.TrimSpace(key))
-	return strings.Contains(k, "authorization") ||
+	return k == "p" || k == "proofofwork" || k == "turnstile" ||
+		strings.Contains(k, "authorization") ||
 		strings.Contains(k, "access_token") ||
 		strings.Contains(k, "refresh_token") ||
 		strings.Contains(k, "id_token") ||

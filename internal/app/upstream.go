@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
-	"crypto/sha3"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,7 @@ import (
 	"math/rand"
 	"mime"
 	stdhttp "net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -33,18 +33,28 @@ const defaultClientVersion = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 const defaultClientBuild = "5955942"
 const defaultPowScript = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 const bootstrapMaxAttempts = 3
+const imageCreationMention = "@创建图像"
+const clientCreatedRoot = "client-created-root"
 
 type UpstreamClient struct {
-	token           string
-	client          upstreamHTTPDoer
-	userAgent       string
-	deviceID        string
-	sessionID       string
-	secCHUA         string
-	secCHUAMobile   string
-	secCHUAPlatform string
-	scriptSources   []string
-	dataBuild       string
+	token            string
+	defaultModelSlug string
+	client           upstreamHTTPDoer
+	userAgent        string
+	deviceID         string
+	sessionID        string
+	secCHUA          string
+	secCHUAMobile    string
+	secCHUAPlatform  string
+	scriptSources    []string
+	dataBuild        string
+	solverURL        string
+	solverKey        string
+	localSolver      sentinelLocalSolver
+	timezone         string
+	browserDate      string
+	imageTurnTrace   string
+	imageBrowserID   string
 }
 
 type chatRequirements struct{ Token, ProofToken, TurnstileToken, SOToken string }
@@ -94,14 +104,24 @@ func NewUpstreamClient(token, proxyURL string, binGetter func() (string, error))
 	return NewUpstreamClientForAccount(Account{AccessToken: token}, proxyURL, binGetter)
 }
 
-func NewUpstreamClientForAccount(account Account, proxyURL string, binGetter func() (string, error)) (*UpstreamClient, error) {
+func NewUpstreamClientForAccount(account Account, proxyURL string, binGetter func() (string, error), configs ...Config) (*UpstreamClient, error) {
 	token := account.AccessToken
 	fp := accountFingerprint(account)
-	client, err := newCurlImpersonateClient(proxyURL, binGetter)
+	client, err := newUpstreamHTTPClient(proxyURL, binGetter)
 	if err != nil {
 		return nil, err
 	}
-	return &UpstreamClient{token: token, client: client, userAgent: fp["user-agent"], deviceID: fp["oai-device-id"], sessionID: fp["oai-session-id"], secCHUA: fp["sec-ch-ua"], secCHUAMobile: fp["sec-ch-ua-mobile"], secCHUAPlatform: fp["sec-ch-ua-platform"], scriptSources: []string{defaultPowScript}}, nil
+	var cfg Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	solverURL := firstNonEmpty(os.Getenv("CHATGPT2API_SENTINEL_SOLVER_URL"), cfg.SentinelSolverURL)
+	solverKey := firstNonEmpty(os.Getenv("CHATGPT2API_SENTINEL_SOLVER_KEY"), cfg.SentinelSolverKey)
+	upstream := &UpstreamClient{token: token, defaultModelSlug: ptrString(account.DefaultModelSlug), client: client, userAgent: fp["user-agent"], deviceID: fp["oai-device-id"], sessionID: fp["oai-session-id"], secCHUA: fp["sec-ch-ua"], secCHUAMobile: fp["sec-ch-ua-mobile"], secCHUAPlatform: fp["sec-ch-ua-platform"], scriptSources: []string{defaultPowScript}, solverURL: strings.TrimRight(strings.TrimSpace(solverURL), "/"), solverKey: strings.TrimSpace(solverKey)}
+	if upstream.solverURL == "" {
+		upstream.localSolver = sharedSentinelSolver(proxyURL, upstream.userAgent)
+	}
+	return upstream, nil
 }
 
 func accountFingerprint(account Account) map[string]string {
@@ -140,8 +160,8 @@ func (c *UpstreamClient) headers(path string, extra map[string]string) http.Head
 	h.Set("Sec-Ch-Ua", c.secCHUA)
 	h.Set("Sec-Ch-Ua-Arch", `"x86"`)
 	h.Set("Sec-Ch-Ua-Bitness", `"64"`)
-	h.Set("Sec-Ch-Ua-Full-Version", `"143.0.3650.96"`)
-	h.Set("Sec-Ch-Ua-Full-Version-List", `"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", "Not A(Brand";v="24.0.0.0"`)
+	h.Set("Sec-Ch-Ua-Full-Version", `"146.0.0.0"`)
+	h.Set("Sec-Ch-Ua-Full-Version-List", `"Chromium";v="146.0.0.0", "Google Chrome";v="146.0.0.0", "Not A(Brand";v="99.0.0.0"`)
 	h.Set("Sec-Ch-Ua-Mobile", c.secCHUAMobile)
 	h.Set("Sec-Ch-Ua-Model", `""`)
 	h.Set("Sec-Ch-Ua-Platform", c.secCHUAPlatform)
@@ -149,26 +169,28 @@ func (c *UpstreamClient) headers(path string, extra map[string]string) http.Head
 	h.Set("Sec-Fetch-Dest", "empty")
 	h.Set("Sec-Fetch-Mode", "cors")
 	h.Set("Sec-Fetch-Site", "same-origin")
-	h.Set("OAI-Device-Id", c.deviceID)
+	h.Set("OAI-Did", c.deviceID)
 	h.Set("OAI-Session-Id", c.sessionID)
 	h.Set("OAI-Language", "zh-CN")
 	h.Set("OAI-Client-Version", defaultClientVersion)
 	h.Set("OAI-Client-Build-Number", defaultClientBuild)
-	h.Set("X-OpenAI-Target-Path", path)
 	h.Set("X-OpenAI-Target-Route", path)
 	if c.token != "" {
 		h.Set("Authorization", "Bearer "+c.token)
+		if accountID := chatGPTAccountID(c.token); accountID != "" {
+			h.Set("ChatGPT-Account-Id", accountID)
+		}
 	}
 	for k, v := range extra {
 		h.Set(k, v)
 	}
 	h[http.HeaderOrderKey] = []string{
-		"user-agent", "accept", "content-type", "authorization", "origin", "referer", "accept-language",
+		"user-agent", "accept", "content-type", "authorization", "chatgpt-account-id", "origin", "referer", "accept-language",
 		"cache-control", "pragma", "priority", "sec-ch-ua", "sec-ch-ua-arch", "sec-ch-ua-bitness",
 		"sec-ch-ua-full-version", "sec-ch-ua-full-version-list", "sec-ch-ua-mobile", "sec-ch-ua-model",
 		"sec-ch-ua-platform", "sec-ch-ua-platform-version", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
-		"oai-device-id", "oai-session-id",
-		"oai-language", "oai-client-version", "oai-client-build-number", "x-openai-target-path",
+		"oai-did", "oai-session-id",
+		"oai-language", "oai-client-version", "oai-client-build-number",
 		"x-openai-target-route", "openai-sentinel-chat-requirements-token", "openai-sentinel-proof-token",
 		"openai-sentinel-turnstile-token", "openai-sentinel-so-token", "x-conduit-token", "x-oai-turn-trace-id",
 	}
@@ -307,41 +329,56 @@ func isRetryableBootstrapError(err error) bool {
 }
 func (c *UpstreamClient) chatRequirements(ctx context.Context) (chatRequirements, error) {
 	traceLogf(ctx, "│  ├─ step build sentinel chat requirements")
-	path := "/backend-api/sentinel/chat-requirements"
+	base := "/backend-api/sentinel/chat-requirements"
 	if c.token == "" {
-		path = "/backend-anon/sentinel/chat-requirements"
+		base = "/backend-anon/sentinel/chat-requirements"
 	}
-	traceLogf(ctx, "│  │  calculating legacy proof input")
-	p := buildLegacyRequirementsToken(c.userAgent, c.scriptSources, c.dataBuild)
-	resp, err := c.do(ctx, http.MethodPost, path, map[string]string{"Content-Type": "application/json"}, map[string]any{"p": p}, false)
+	ua, err := c.sentinelUserAgent(ctx)
 	if err != nil {
 		return chatRequirements{}, err
 	}
-	defer resp.Body.Close()
-	var data map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	p := buildLegacyRequirementsToken(ua, c.scriptSources, c.dataBuild, c.powDate())
+	resp, err := c.do(ctx, http.MethodPost, base+"/prepare", map[string]string{"Content-Type": "application/json"}, map[string]any{"p": p}, false)
+	if err != nil {
 		return chatRequirements{}, err
 	}
-	if ark, ok := data["arkose"].(map[string]any); ok && boolAny(ark["required"], false) {
+	var prepared map[string]any
+	err = json.NewDecoder(resp.Body).Decode(&prepared)
+	resp.Body.Close()
+	if err != nil {
+		return chatRequirements{}, err
+	}
+	if ark, ok := prepared["arkose"].(map[string]any); ok && boolAny(ark["required"], false) {
 		return chatRequirements{}, errors.New("upstream requires arkose token; not implemented")
 	}
-	cr := chatRequirements{Token: strAny(data["token"], ""), SOToken: strAny(data["so_token"], "")}
-	if pow, ok := data["proofofwork"].(map[string]any); ok && boolAny(pow["required"], false) {
-		proof, err := buildProofToken(strAny(pow["seed"], ""), strAny(pow["difficulty"], ""), c.userAgent, c.scriptSources, c.dataBuild)
+	prepareToken := strAny(prepared["prepare_token"], "")
+	if prepareToken == "" {
+		return chatRequirements{}, errors.New("missing sentinel prepare token")
+	}
+	cr := chatRequirements{}
+	if pow, ok := prepared["proofofwork"].(map[string]any); ok && boolAny(pow["required"], false) {
+		proof, err := buildProofToken(strAny(pow["seed"], ""), strAny(pow["difficulty"], ""), ua, c.scriptSources, c.dataBuild, c.powDate())
 		if err != nil {
 			return cr, err
 		}
 		cr.ProofToken = proof
 	}
-	if turnstile, ok := data["turnstile"].(map[string]any); ok && boolAny(turnstile["required"], false) {
-		turnstileSourceP := p
-		if c.token != "" {
-			turnstileSourceP = ""
-		}
-		if dx := strAny(turnstile["dx"], ""); dx != "" {
-			cr.TurnstileToken = solveTurnstileToken(dx, turnstileSourceP)
+	if turnstile, ok := prepared["turnstile"].(map[string]any); ok && boolAny(turnstile["required"], false) {
+		cr.TurnstileToken, err = c.solveSentinelTurnstile(ctx, strAny(turnstile["dx"], ""), p, prepared)
+		if err != nil {
+			return cr, err
 		}
 	}
+	resp, err = c.do(ctx, http.MethodPost, base+"/finalize", map[string]string{"Content-Type": "application/json"}, map[string]any{"prepare_token": prepareToken, "proofofwork": cr.ProofToken, "turnstile": cr.TurnstileToken}, false)
+	if err != nil {
+		return cr, err
+	}
+	defer resp.Body.Close()
+	var finalized map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&finalized); err != nil {
+		return cr, err
+	}
+	cr.Token = strAny(finalized["token"], "")
 	if cr.Token == "" {
 		traceLogf(ctx, "│  └─ sentinel failed missing requirements token")
 		return cr, errors.New("missing chat requirements token")
@@ -363,7 +400,7 @@ func (c *UpstreamClient) conversationHeaders(path string, cr chatRequirements) m
 	return h
 }
 func (c *UpstreamClient) imageHeaders(path string, cr chatRequirements, conduit, accept string) map[string]string {
-	h := map[string]string{"Content-Type": "application/json", "Accept": accept, "OpenAI-Sentinel-Chat-Requirements-Token": cr.Token}
+	h := map[string]string{"Content-Type": "application/json", "Accept": accept, "OpenAI-Sentinel-Chat-Requirements-Token": cr.Token, "Originator": "Codex Browser", "X-OpenAI-Codex-Window-Type": "browser", "X-OpenAI-Web-Frontend": "codex_webview", "X-Oai-Mcp-Form-Version": "2"}
 	if cr.ProofToken != "" {
 		h["OpenAI-Sentinel-Proof-Token"] = cr.ProofToken
 	}
@@ -376,7 +413,9 @@ func (c *UpstreamClient) imageHeaders(path string, cr chatRequirements, conduit,
 	if conduit != "" {
 		h["X-Conduit-Token"] = conduit
 	}
-	if accept == "text/event-stream" {
+	if c.imageTurnTrace != "" {
+		h["X-Oai-Turn-Trace-Id"] = c.imageTurnTrace
+	} else if accept == "text/event-stream" {
 		h["X-Oai-Turn-Trace-Id"] = uuid4()
 	}
 	return h
@@ -428,6 +467,7 @@ func (c *UpstreamClient) streamTextConversationEvents(ctx context.Context, messa
 			model = "auto"
 		}
 		modelOpts := normalizeTextModelOptions(model)
+		timezone, timezoneOffset, _ := c.timezoneInfo()
 		parentID := uuid4()
 		conversationID = strings.TrimSpace(conversationID)
 		if conversationID != "" {
@@ -443,7 +483,7 @@ func (c *UpstreamClient) streamTextConversationEvents(ctx context.Context, messa
 			errs <- err
 			return
 		}
-		payload := map[string]any{"action": "next", "messages": conversationMessages, "model": modelOpts.Model, "parent_message_id": parentID, "conversation_mode": map[string]any{"kind": "primary_assistant"}, "conversation_origin": nil, "force_paragen": false, "force_paragen_model_slug": "", "force_rate_limit": false, "force_use_sse": true, "history_and_training_disabled": historyDisabled, "reset_rate_limits": false, "suggestions": []any{}, "supported_encodings": []string{}, "system_hints": []string{}, "timezone": "Asia/Shanghai", "timezone_offset_min": -480, "variant_purpose": "comparison_implicit", "websocket_request_id": uuid4(), "client_contextual_info": clientContext()}
+		payload := map[string]any{"action": "next", "messages": conversationMessages, "model": modelOpts.Model, "parent_message_id": parentID, "conversation_mode": map[string]any{"kind": "primary_assistant"}, "conversation_origin": nil, "force_paragen": false, "force_paragen_model_slug": "", "force_rate_limit": false, "force_use_sse": true, "history_and_training_disabled": historyDisabled, "reset_rate_limits": false, "suggestions": []any{}, "supported_encodings": []string{}, "system_hints": []string{}, "timezone": timezone, "timezone_offset_min": timezoneOffset, "variant_purpose": "comparison_implicit", "websocket_request_id": uuid4(), "client_contextual_info": clientContext()}
 		if modelOpts.ReasoningLevel != "" {
 			payload["thinking_effort"] = modelOpts.ReasoningLevel
 		}
@@ -599,7 +639,10 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 }
 func (c *UpstreamClient) prepareImage(ctx context.Context, prompt, model string, cr chatRequirements) (string, error) {
 	path := "/backend-api/f/conversation/prepare"
-	payload := map[string]any{"action": "next", "fork_from_shared_post": false, "parent_message_id": uuid4(), "model": imageModelSlug(model), "client_prepare_state": "success", "timezone_offset_min": -480, "timezone": "Asia/Shanghai", "conversation_mode": map[string]any{"kind": "primary_assistant"}, "system_hints": []string{"picture_v2"}, "partial_query": map[string]any{"id": uuid4(), "author": map[string]any{"role": "user"}, "content": map[string]any{"content_type": "text", "parts": []string{prompt}}}, "supports_buffering": true, "supported_encodings": []string{"v1"}, "client_contextual_info": map[string]any{"app_name": "chatgpt.com"}}
+	c.imageTurnTrace = uuid4()
+	c.imageBrowserID = uuid4()
+	timezone, timezoneOffset, _ := c.timezoneInfo()
+	payload := map[string]any{"action": "next", "browser_context": map[string]any{"instance_id": c.imageBrowserID}, "parent_message_id": clientCreatedRoot, "model": c.imageModelSlug(model), "client_prepare_state": "sent", "client_prepare_dispatch": "debounced", "client_prepare_source": "composer_editor_state", "is_do_not_remember": false, "timezone_offset_min": timezoneOffset, "timezone": timezone, "thinking_effort": "standard", "system_hints": []string{"picture_v2"}, "partial_query": map[string]any{"id": uuid4(), "author": map[string]any{"role": "user"}, "content": map[string]any{"content_type": "text", "parts": []string{prompt}}}, "supported_encodings": []string{"v1"}, "local_function_names": []string{"local.continue_in_work"}, "client_contextual_info": imageClientContext()}
 	resp, err := c.do(ctx, http.MethodPost, path, c.imageHeaders(path, cr, "", "*/*"), payload, false)
 	if err != nil {
 		return "", err
@@ -615,23 +658,29 @@ func (c *UpstreamClient) prepareImage(ctx context.Context, prompt, model string,
 }
 func (c *UpstreamClient) startImage(ctx context.Context, prompt, model string, cr chatRequirements, conduit string, refs []map[string]any) (*http.Response, error) {
 	path := "/backend-api/f/conversation"
+	timezone, timezoneOffset, _ := c.timezoneInfo()
+	imagePrompt := imageCreationMention + " " + prompt
 	parts := []any{}
 	attachments := []map[string]any{}
 	for _, r := range refs {
 		parts = append(parts, map[string]any{"content_type": "image_asset_pointer", "asset_pointer": "file-service://" + strAny(r["file_id"], ""), "width": r["width"], "height": r["height"], "size_bytes": r["file_size"]})
 		attachments = append(attachments, map[string]any{"id": r["file_id"], "mimeType": r["mime_type"], "name": r["file_name"], "size": r["file_size"], "width": r["width"], "height": r["height"]})
 	}
-	parts = append(parts, prompt)
-	content := map[string]any{"content_type": "text", "parts": []string{prompt}}
+	parts = append(parts, imagePrompt)
+	content := map[string]any{"content_type": "text", "parts": []string{imagePrompt}}
 	if len(refs) > 0 {
 		content = map[string]any{"content_type": "multimodal_text", "parts": parts}
 	}
-	metadata := map[string]any{"developer_mode_connector_ids": []any{}, "selected_github_repos": []any{}, "selected_all_github_repos": false, "system_hints": []string{"picture_v2"}, "serialization_metadata": map[string]any{"custom_symbol_offsets": []any{}}}
+	metadata := map[string]any{"developer_mode_connector_ids": []any{}, "selected_github_repos": []any{}, "selected_all_github_repos": false, "system_hints": []string{"picture_v2"}, "serialization_metadata": map[string]any{"render_format": "markdown", "custom_symbol_offsets": []any{map[string]any{"id": "picture_v2", "symbol": "ecosystemMention", "startIndex": 0, "endIndex": utf8.RuneCountInString(imageCreationMention)}}}}
 	if len(attachments) > 0 {
 		metadata["attachments"] = attachments
 	}
-	payload := map[string]any{"action": "next", "messages": []any{map[string]any{"id": uuid4(), "author": map[string]any{"role": "user"}, "create_time": float64(time.Now().UnixNano()) / 1e9, "content": content, "metadata": metadata}}, "parent_message_id": uuid4(), "model": imageModelSlug(model), "client_prepare_state": "sent", "timezone_offset_min": -480, "timezone": "Asia/Shanghai", "conversation_mode": map[string]any{"kind": "primary_assistant"}, "enable_message_followups": true, "system_hints": []string{"picture_v2"}, "supports_buffering": true, "supported_encodings": []string{"v1"}, "client_contextual_info": clientContext(), "paragen_cot_summary_display_override": "allow", "force_parallel_switch": "auto"}
+	payload := map[string]any{"action": "next", "browser_context": map[string]any{"instance_id": c.imageBrowserID}, "messages": []any{map[string]any{"id": uuid4(), "author": map[string]any{"role": "user", "name": nil, "metadata": map[string]any{}}, "channel": nil, "create_time": float64(time.Now().UnixNano()) / 1e9, "end_turn": nil, "content": content, "metadata": metadata, "recipient": "all", "status": "finished_successfully", "update_time": nil, "weight": 1}}, "parent_message_id": clientCreatedRoot, "model": c.imageModelSlug(model), "client_prepare_state": "success", "is_do_not_remember": false, "turn_attribution": map[string]any{"turn_trigger": "composer"}, "genui_state_snapshots": []any{}, "timezone_offset_min": timezoneOffset, "timezone": timezone, "thinking_effort": "standard", "system_hints": []string{"picture_v2"}, "supported_encodings": []string{"v1"}, "local_function_names": []string{"local.continue_in_work"}, "client_contextual_info": imageClientContext()}
 	return c.do(ctx, http.MethodPost, path, c.imageHeaders(path, cr, conduit, "text/event-stream"), payload, true)
+}
+
+func imageClientContext() map[string]any {
+	return map[string]any{"app_name": "chatgpt.com", "app_surface": "codex_browser", "has_web_push_capabilities": true, "web_push_notification_permission": "default"}
 }
 func (c *UpstreamClient) uploadImage(ctx context.Context, data []byte, name string, timeout time.Duration) (map[string]any, error) {
 	traceLogf(ctx, "│  ├─ upload image begin name=%s bytes=%d", name, len(data))
@@ -1801,12 +1850,20 @@ func normalizeTextModelOptions(model string) textModelOptions {
 func imageModelSlug(model string) string {
 	switch strings.TrimSpace(strings.ToLower(model)) {
 	case "gpt-image-2":
-		return "gpt-5-3"
+		return "auto"
 	case "codex-gpt-image-2":
 		return "codex-gpt-image-2"
 	default:
 		return "auto"
 	}
+}
+
+func (c *UpstreamClient) imageModelSlug(model string) string {
+	slug := imageModelSlug(model)
+	if slug == "auto" && c.defaultModelSlug != "" {
+		return c.defaultModelSlug
+	}
+	return slug
 }
 func clientContext() map[string]any {
 	return map[string]any{"is_dark_mode": false, "time_since_loaded": 120, "page_height": 900, "page_width": 1400, "pixel_ratio": 2, "screen_height": 1440, "screen_width": 2560, "app_name": "chatgpt.com"}
@@ -1890,48 +1947,104 @@ func parsePowResources(html string) ([]string, string) {
 	}
 	return src, build
 }
-func buildPowConfig(ua string, scripts []string, dataBuild string) []any {
+
+func localTimezoneName() string {
+	for _, value := range []string{os.Getenv("CHATGPT2API_UPSTREAM_TIMEZONE"), os.Getenv("TZ")} {
+		if name := strings.TrimSpace(value); name != "" {
+			return name
+		}
+	}
+	if link, err := os.Readlink("/etc/localtime"); err == nil {
+		if _, name, ok := strings.Cut(link, "/zoneinfo/"); ok {
+			return name
+		}
+	}
+	return "Asia/Shanghai"
+}
+
+func (c *UpstreamClient) timezoneInfo() (string, int, *time.Location) {
+	name := c.timezone
+	if name == "" {
+		name = localTimezoneName()
+	}
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		name = "Asia/Shanghai"
+		location, _ = time.LoadLocation(name)
+	}
+	_, offsetSeconds := time.Now().In(location).Zone()
+	return name, -offsetSeconds / 60, location
+}
+
+func (c *UpstreamClient) powDate() string {
+	if c.browserDate != "" {
+		return c.browserDate
+	}
+	name, _, location := c.timezoneInfo()
+	date := time.Now().In(location)
+	label, _ := date.Zone()
+	switch name {
+	case "Asia/Shanghai":
+		label = "China Standard Time"
+	case "America/Los_Angeles":
+		if label == "PDT" {
+			label = "Pacific Daylight Time"
+		} else {
+			label = "Pacific Standard Time"
+		}
+	}
+	return date.Format("Mon Jan 02 2006 15:04:05 GMT-0700") + " (" + label + ")"
+}
+
+func buildPowConfig(ua string, scripts []string, dataBuild, date string) []any {
 	nav := []string{"webdriver−false", "vendor−Google Inc.", "hardwareConcurrency−32", "language−zh-CN", "cookieEnabled−true"}
 	win := []string{"window", "document", "location", "navigator", "crypto", "fetch", "screen"}
 	script := defaultPowScript
 	if len(scripts) > 0 {
 		script = scripts[rand.Intn(len(scripts))]
 	}
-	return []any{[]int{3000, 4000, 5000}[rand.Intn(3)], time.Now().In(time.FixedZone("EST", -5*3600)).Format("Mon Jan 02 2006 15:04:05") + " GMT-0500 (Eastern Standard Time)", 4294705152, 0, ua, script, dataBuild, "en-US", "en-US,es-US,en,es", 0, nav[rand.Intn(len(nav))], "location", win[rand.Intn(len(win))], float64(time.Now().UnixNano()) / 1e6, randID(16), "", []int{8, 16, 24, 32}[rand.Intn(4)], float64(time.Now().UnixNano())/1e6 - 1000}
+	now := time.Now()
+	return []any{[]int{3000, 4000, 5000}[rand.Intn(3)], date, 4294705152, 1, ua, script, dataBuild, "en-US", "en-US,es-US,en,es", rand.Float64(), nav[rand.Intn(len(nav))], "location", win[rand.Intn(len(win))], float64(now.UnixNano()) / 1e6, uuid4(), "", []int{8, 16, 24, 32}[rand.Intn(4)], float64(now.UnixNano())/1e6 - 1000, 0, 0, 0, 0, 0, 0, 0}
 }
 func powGenerate(seed, diff string, cfg []any, limit int) (string, bool) {
-	target, err := hexDecode(diff)
-	if err != nil || len(target) == 0 {
+	target := strings.ToLower(strings.TrimSpace(diff))
+	if target == "" {
 		return "", false
 	}
-	diffLen := len(diff) / 2
-	s1 := jsonCompact(cfg[:3])
-	s1 = s1[:len(s1)-1] + ","
-	s2 := jsonCompact(cfg[4:9])
-	s2 = "," + s2[1:len(s2)-1] + ","
-	s3 := jsonCompact(cfg[10:])
-	s3 = "," + s3[1:]
+	started := time.Now()
 	for i := 0; i < limit; i++ {
-		final := []byte(s1 + fmt.Sprint(i) + s2 + fmt.Sprint(i>>1) + s3)
-		enc := base64.StdEncoding.EncodeToString(final)
-		h := sha3.Sum512(append([]byte(seed), []byte(enc)...))
-		if bytes.Compare(h[:diffLen], target) <= 0 {
+		cfg[3] = i
+		cfg[9] = time.Since(started).Milliseconds()
+		enc := base64.StdEncoding.EncodeToString([]byte(jsonCompact(cfg)))
+		digest := fmt.Sprintf("%08x", fnv1a32(seed+enc))
+		if len(target) <= len(digest) && digest[:len(target)] <= target {
 			return enc, true
 		}
 	}
-	return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + base64.StdEncoding.EncodeToString([]byte("\""+seed+"\"")), false
+	return "", false
 }
-func buildLegacyRequirementsToken(ua string, scripts []string, dataBuild string) string {
-	seed := fmt.Sprintf("%f", rand.Float64())
-	ans, _ := powGenerate(seed, "0fffff", buildPowConfig(ua, scripts, dataBuild), 500000)
-	return "gAAAAAC" + ans
+func fnv1a32(s string) uint32 {
+	h := uint32(2166136261)
+	for _, ch := range s {
+		h ^= uint32(ch)
+		h *= 16777619
+	}
+	h ^= h >> 16
+	h *= 2246822507
+	h ^= h >> 13
+	h *= 3266489909
+	h ^= h >> 16
+	return h
 }
-func buildProofToken(seed, diff, ua string, scripts []string, dataBuild string) (string, error) {
-	ans, ok := powGenerate(seed, diff, buildPowConfig(ua, scripts, dataBuild), 500000)
+func buildLegacyRequirementsToken(ua string, scripts []string, dataBuild, date string) string {
+	return "gAAAAAC" + base64.StdEncoding.EncodeToString([]byte(jsonCompact(buildPowConfig(ua, scripts, dataBuild, date))))
+}
+func buildProofToken(seed, diff, ua string, scripts []string, dataBuild, date string) (string, error) {
+	ans, ok := powGenerate(seed, diff, buildPowConfig(ua, scripts, dataBuild, date), 500000)
 	if !ok {
 		return "", fmt.Errorf("failed to solve proof token: difficulty=%s", diff)
 	}
-	return "gAAAAAB" + ans, nil
+	return "gAAAAAB" + ans + "~S", nil
 }
 func jsonCompact(v any) string { b, _ := json.Marshal(v); return string(b) }
 func hexDecode(s string) ([]byte, error) {
@@ -1968,7 +2081,7 @@ func (s *Server) upstreamClient() (*UpstreamClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+	return NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
 }
 func (s *Server) upstreamClientForImage(model, resolution string) (*UpstreamClient, error) {
 	return s.upstreamClientForImageExcluding(model, resolution, nil)
@@ -1991,7 +2104,7 @@ func (s *Server) upstreamClientForImageAccount(model, resolution string, account
 			account = refreshed
 		}
 	}
-	client, err := NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+	client, err := NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
 	return client, account, err
 }
 
