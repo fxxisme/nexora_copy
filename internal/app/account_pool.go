@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -23,6 +25,23 @@ func ptrString(v *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*v)
+}
+
+func isSignupAccessToken(token string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Auth struct {
+			IsSignup bool `json:"is_signup"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	return json.Unmarshal(payload, &claims) == nil && claims.Auth.IsSignup
 }
 
 func parseAccountTime(value string) (time.Time, error) {
@@ -123,24 +142,26 @@ func (p *accountPool) pickTextTokenExcluding(accounts []Account, planType string
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	premium := map[string]bool{"plus": true, "pro": true, "team": true}
-	for offset := 0; offset < len(accounts); offset++ {
-		idx := (p.index + offset) % len(accounts)
-		a := accounts[idx]
-		if a.AccessToken == "" || excluded[a.AccessToken] || a.Status == "禁用" || a.Status == "异常" {
-			continue
-		}
-		lower := strings.ToLower(a.Type)
-		if planType == "free" {
-			if premium[lower] {
+	for signupPass := 0; signupPass < 2; signupPass++ {
+		for offset := 0; offset < len(accounts); offset++ {
+			idx := (p.index + offset) % len(accounts)
+			a := accounts[idx]
+			if a.AccessToken == "" || excluded[a.AccessToken] || a.Status == "禁用" || a.Status == "异常" || isSignupAccessToken(a.AccessToken) != (signupPass == 1) {
 				continue
 			}
-		} else if planType != "" {
-			if lower != planType && (!premium[lower] || lower != planType) {
-				continue
+			lower := strings.ToLower(a.Type)
+			if planType == "free" {
+				if premium[lower] {
+					continue
+				}
+			} else if planType != "" {
+				if lower != planType && (!premium[lower] || lower != planType) {
+					continue
+				}
 			}
+			p.index = (idx + 1) % len(accounts)
+			return a.AccessToken, nil
 		}
-		p.index = (idx + 1) % len(accounts)
-		return a.AccessToken, nil
 	}
 	return "", errors.New("no available text account")
 }

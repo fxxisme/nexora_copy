@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -47,9 +48,25 @@ func TestAutoConversation404QuarantinesAccount(t *testing.T) {
 	}
 }
 
-func TestLiveAutoConversation404Failover(t *testing.T) {
-	if os.Getenv("CHATGPT2API_LIVE_404_FAILOVER") != "1" {
-		t.Skip("set CHATGPT2API_LIVE_404_FAILOVER=1 for upstream failover verification")
+func TestTextPoolPrefersLoginTokenWithoutDroppingSignupFallback(t *testing.T) {
+	signup := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"is_signup":true}}`)) + ".sig"
+	login := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{}}`)) + ".sig"
+	if !isSignupAccessToken(signup) || isSignupAccessToken(login) || isSignupAccessToken("invalid") {
+		t.Fatal("signup claim detection failed")
+	}
+	accounts := []Account{{AccessToken: signup, Type: "free", Status: "正常"}, {AccessToken: login, Type: "free", Status: "正常"}}
+	pool := newAccountPool(&Config{})
+	if token, err := pool.pickTextToken(accounts, "free"); err != nil || token != login {
+		t.Fatalf("expected login token first, got %q: %v", token, err)
+	}
+	if token, err := pool.pickTextTokenExcluding(accounts, "free", map[string]bool{login: true}); err != nil || token != signup {
+		t.Fatalf("expected signup token as fallback, got %q: %v", token, err)
+	}
+}
+
+func TestLiveAutoConversationPrefersLoginToken(t *testing.T) {
+	if os.Getenv("CHATGPT2API_LIVE_404_POOL") != "1" {
+		t.Skip("set CHATGPT2API_LIVE_404_POOL=1 for upstream pool verification")
 	}
 	failingEmail := os.Getenv("CHATGPT2API_LIVE_404_ACCOUNT_EMAIL")
 	workingEmail := os.Getenv("CHATGPT2API_LIVE_WORKING_ACCOUNT_EMAIL")
@@ -86,6 +103,9 @@ func TestLiveAutoConversation404Failover(t *testing.T) {
 			t.Fatalf("live test account %s was not found", email)
 		}
 	}
+	if !isSignupAccessToken(selected[0].AccessToken) || isSignupAccessToken(selected[1].AccessToken) {
+		t.Fatal("live test requires a signup token followed by a login token")
+	}
 	store := NewStore(t.TempDir())
 	if err := store.SaveAccounts(selected); err != nil {
 		t.Fatal(err)
@@ -102,10 +122,10 @@ func TestLiveAutoConversation404Failover(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(strings.ToUpper(content.String()), "OK") {
-		t.Fatalf("failover did not return the requested acknowledgement: response_len=%d", content.Len())
+		t.Fatalf("pool did not return the requested acknowledgement: response_len=%d", content.Len())
 	}
 	got := store.LoadAccounts()
-	if got[0].Status != "异常" || got[0].Fail != selected[0].Fail+1 || got[1].Success != selected[1].Success+1 {
-		t.Fatalf("unexpected failover states: first=%s second=%s", got[0].Status, got[1].Status)
+	if got[0].Status != selected[0].Status || got[0].Fail != selected[0].Fail || got[1].Success != selected[1].Success+1 {
+		t.Fatalf("unexpected pool states: first=%s second=%s", got[0].Status, got[1].Status)
 	}
 }
