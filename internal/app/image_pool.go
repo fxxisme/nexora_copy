@@ -59,7 +59,7 @@ func (s *Server) generateImageWithPool(ctx context.Context, prompt, model, size,
 			return items, nil
 		}
 		traceLogf(ctx, "│  └─ image account attempt %d failed error=%v", attempt+1, err)
-		s.markAccountFailure(token, err, true)
+		s.markAccountFailure(token, err, true, "")
 		lastErr = err
 		if !shouldRetryImageAccount(err) {
 			return nil, err

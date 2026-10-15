@@ -250,6 +250,14 @@ func mergeAccount(dst *Account, src Account) {
 	}
 }
 
+func mergeRefreshedAccount(dst *Account, info Account) {
+	status := dst.Status
+	mergeAccount(dst, info)
+	if status == "异常" || status == "禁用" {
+		dst.Status = status
+	}
+}
+
 func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (int, []map[string]any) {
 	want := map[string]bool{}
 	for _, t := range tokens {
@@ -260,7 +268,7 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 	accounts := s.store.LoadAccounts()
 	refreshed := 0
 	errs := []map[string]any{}
-	for i, a := range accounts {
+	for _, a := range accounts {
 		if len(want) > 0 && !want[a.AccessToken] {
 			continue
 		}
@@ -270,10 +278,18 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 			var info Account
 			info, err = client.GetUserInfo(ctx)
 			if err == nil {
-				mergeAccount(&a, info)
-				a.AccessToken = accounts[i].AccessToken
-				accounts[i] = a
-				refreshed++
+				err = s.store.UpdateAccounts(func(current []Account) []Account {
+					for i := range current {
+						if current[i].AccessToken == a.AccessToken {
+							mergeRefreshedAccount(&current[i], info)
+							break
+						}
+					}
+					return current
+				})
+				if err == nil {
+					refreshed++
+				}
 			}
 		}
 		cancel()
@@ -281,7 +297,6 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 			errs = append(errs, map[string]any{"token": a.AccessToken, "error": err.Error()})
 		}
 	}
-	_ = s.store.SaveAccounts(accounts)
 	return refreshed, errs
 }
 

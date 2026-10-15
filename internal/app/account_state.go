@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,6 +35,24 @@ func isInvalidTokenErrorText(err error) bool {
 		strings.Contains(text, "token_revoked") ||
 		strings.Contains(text, "invalidated oauth token") ||
 		strings.Contains(text, "authentication token has been invalidated")
+}
+
+func isAutoConversationModelNotFound(err error, model string) bool {
+	if err == nil || normalizeTextModelOptions(model).Model != "auto" {
+		return false
+	}
+	text := err.Error()
+	if !strings.Contains(strings.ToLower(text), "post /backend-api/conversation failed: status=404 body=") {
+		return false
+	}
+	_, body, ok := strings.Cut(text, " body=")
+	if !ok {
+		return false
+	}
+	var payload struct {
+		Detail string `json:"detail"`
+	}
+	return json.Unmarshal([]byte(body), &payload) == nil && strings.EqualFold(strings.TrimSpace(payload.Detail), "Model not found")
 }
 
 func isUpstreamBlockErrorText(err error) bool {
@@ -115,7 +134,7 @@ func (s *Server) markAccountSuccess(token string, image bool) {
 	})
 }
 
-func (s *Server) markAccountFailure(token string, err error, image bool) {
+func (s *Server) markAccountFailure(token string, err error, image bool, model string) {
 	if token == "" {
 		return
 	}
@@ -136,10 +155,12 @@ func (s *Server) markAccountFailure(token string, err error, image bool) {
 				if s.cfg.AutoRemoveRateLimitedAccounts {
 					accounts = append(accounts[:i], accounts[i+1:]...)
 				}
-			} else if isInvalidTokenErrorText(err) {
+			} else if isInvalidTokenErrorText(err) || (!image && isAutoConversationModelNotFound(err, model)) {
 				accounts[i].Status = "异常"
-				accounts[i].Quota = 0
-				if s.cfg.AutoRemoveInvalidAccounts {
+				if isInvalidTokenErrorText(err) {
+					accounts[i].Quota = 0
+				}
+				if isInvalidTokenErrorText(err) && s.cfg.AutoRemoveInvalidAccounts {
 					accounts = append(accounts[:i], accounts[i+1:]...)
 				}
 			}
