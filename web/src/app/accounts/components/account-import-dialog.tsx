@@ -157,14 +157,19 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       setOpen(false);
       resetState();
 
+      const signupCount = data.signup_tokens ?? 0;
+      const summary = `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，资料刷新 ${data.refreshed ?? 0} 个`;
+      const signupNote = signupCount > 0 ? `，其中 ${signupCount} 个带注册阶段标记` : "";
       if ((data.errors?.length ?? 0) > 0) {
         const firstError = data.errors?.[0]?.error;
         toast.error(
-          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+          `${summary}${signupNote}，资料刷新失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
         );
+      } else if (signupCount > 0) {
+        toast.warning(`${summary}${signupNote}`);
       } else {
         toast.success(
-          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，已自动刷新账号信息`,
+          `${summary}，跳过 ${data.skipped ?? 0} 个重复项`,
         );
       }
     } catch (error) {

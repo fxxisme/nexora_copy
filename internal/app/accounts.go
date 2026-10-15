@@ -18,6 +18,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var body struct {
 			Tokens         []string         `json:"tokens"`
+			Accounts       []map[string]any `json:"accounts"`
 			AccountRecords []map[string]any `json:"account_records"`
 			SourceType     string           `json:"source_type"`
 		}
@@ -39,14 +40,14 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 				tokset[t] = map[string]any{"access_token": t}
 			}
 		}
-		for _, rec := range body.AccountRecords {
+		for _, rec := range append(body.Accounts, body.AccountRecords...) {
 			t := strings.TrimSpace(strAny(rec["access_token"], strAny(rec["accessToken"], "")))
 			if t != "" {
 				tokset[t] = rec
 			}
 		}
 		if len(tokset) == 0 {
-			writeErr(w, 400, "tokens or account_records is required")
+			writeErr(w, 400, "tokens, accounts or account_records is required")
 			return
 		}
 		accounts := s.store.LoadAccounts()
@@ -54,12 +55,15 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		for i, a := range accounts {
 			existing[a.AccessToken] = i
 		}
-		added, skipped := 0, 0
+		added, skipped, signupTokens := 0, 0, 0
 		for token, rec := range tokset {
+			if isSignupAccessToken(token) {
+				signupTokens++
+			}
 			a := accountFromRecord(token, source, rec)
 			if idx, ok := existing[token]; ok {
 				cur := accounts[idx]
-				mergeAccount(&cur, a)
+				mergeImportedAccount(&cur, a, rec, body.SourceType != "")
 				accounts[idx] = cur
 				skipped++
 			} else {
@@ -71,7 +75,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		refreshed, errs := s.refreshAccountInfos(r.Context(), keysOf(tokset))
 		accounts = s.store.LoadAccounts()
 		s.logSvc.add("account", "新增账号", map[string]any{"added": added, "skipped": skipped, "refreshed": refreshed})
-		writeJSON(w, 200, map[string]any{"added": added, "skipped": skipped, "refreshed": refreshed, "errors": errs, "items": accounts})
+		writeJSON(w, 200, map[string]any{"added": added, "skipped": skipped, "refreshed": refreshed, "signup_tokens": signupTokens, "errors": errs, "items": accounts})
 	case http.MethodDelete:
 		var body struct {
 			Tokens          []string `json:"tokens"`
@@ -105,15 +109,66 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 
 func accountFromRecord(token, source string, rec map[string]any) Account {
 	typ := strings.TrimSpace(strAny(rec["type"], strAny(rec["plan_type"], "free")))
+	if strings.EqualFold(typ, "codex") {
+		typ = "free"
+		source = "codex"
+	}
 	if typ == "" {
 		typ = "free"
+	}
+	if strings.EqualFold(strAny(rec["export_type"], ""), "codex") {
+		source = "codex"
+	}
+	if recordSource := strings.ToLower(strings.TrimSpace(strAny(rec["source_type"], ""))); recordSource == "web" || recordSource == "codex" {
+		source = recordSource
 	}
 	status := strings.TrimSpace(strAny(rec["status"], "正常"))
 	if status == "" {
 		status = "正常"
 	}
 	now := nowISO()
-	a := Account{AccessToken: token, Type: typ, SourceType: source, Status: status, Quota: intAny(rec["quota"], 0), Success: intAny(rec["success"], 0), Fail: intAny(rec["fail"], 0), CreatedAt: &now, ImageQuotaUnknown: boolAny(rec["image_quota_unknown"], false)}
+	a := Account{AccessToken: token, Type: typ, SourceType: source, IsSignupToken: isSignupAccessToken(token), Status: status, Quota: intAny(rec["quota"], 0), Success: intAny(rec["success"], 0), Fail: intAny(rec["fail"], 0), CreatedAt: &now, ImageQuotaUnknown: boolAny(rec["image_quota_unknown"], false)}
+	a.ExportType = strings.TrimSpace(strAny(rec["export_type"], ""))
+	if strings.EqualFold(strAny(rec["type"], ""), "codex") {
+		a.ExportType = "codex"
+	}
+	if v := strings.TrimSpace(strAny(rec["created_at"], "")); v != "" {
+		a.CreatedAt = &v
+	}
+	if v := strings.TrimSpace(strAny(rec["password"], "")); v != "" {
+		a.Password = &v
+	}
+	if v := strings.TrimSpace(strAny(rec["email_password"], "")); v != "" {
+		a.EmailPassword = &v
+	}
+	if raw, ok := rec["mailbox"].(map[string]any); ok {
+		a.Mailbox = make(map[string]any, len(raw))
+		for k, v := range raw {
+			a.Mailbox[k] = v
+		}
+	}
+	mailboxFields := []struct{ source, target string }{
+		{"mailbox_provider", "provider"},
+		{"mailbox_refresh_token", "refresh_token"},
+		{"mailbox_client_id", "client_id"},
+		{"mailbox_email", "login_email"},
+		{"mailbox_login_email", "login_email"},
+		{"imap_host", "imap_host"},
+	}
+	for _, field := range mailboxFields {
+		if v := strings.TrimSpace(strAny(rec[field.source], "")); v != "" {
+			if a.Mailbox == nil {
+				a.Mailbox = map[string]any{}
+			}
+			a.Mailbox[field.target] = v
+		}
+	}
+	if v := firstNonEmpty(strings.TrimSpace(strAny(rec["mailbox_password"], "")), ptrString(a.EmailPassword)); v != "" {
+		if a.Mailbox == nil {
+			a.Mailbox = map[string]any{}
+		}
+		a.Mailbox["password"] = v
+	}
 	if v := strings.TrimSpace(strAny(rec["email"], "")); v != "" {
 		a.Email = &v
 	}
@@ -185,7 +240,47 @@ func keysOf(m map[string]map[string]any) []string {
 	return out
 }
 
+func mergeImportedAccount(dst *Account, src Account, rec map[string]any, explicitSource bool) {
+	if strings.TrimSpace(strAny(rec["type"], strAny(rec["plan_type"], ""))) == "" {
+		src.Type = ""
+	}
+	if strings.TrimSpace(strAny(rec["status"], "")) == "" {
+		src.Status = ""
+	}
+	if !explicitSource && strings.TrimSpace(strAny(rec["source_type"], strAny(rec["export_type"], ""))) == "" && !strings.EqualFold(strAny(rec["type"], ""), "codex") {
+		src.SourceType = ""
+	}
+	if _, ok := rec["quota"]; !ok {
+		src.Quota = dst.Quota
+		src.ImageQuotaUnknown = dst.ImageQuotaUnknown
+	}
+	mergeAccount(dst, src)
+}
+
 func mergeAccount(dst *Account, src Account) {
+	if src.ExportType != "" {
+		dst.ExportType = src.ExportType
+	}
+	if dst.CreatedAt == nil && src.CreatedAt != nil {
+		dst.CreatedAt = src.CreatedAt
+	}
+	if src.Password != nil {
+		dst.Password = src.Password
+	}
+	if src.EmailPassword != nil {
+		if dst.Password != nil && *dst.Password == *src.EmailPassword && src.Password == nil {
+			dst.Password = nil
+		}
+		dst.EmailPassword = src.EmailPassword
+	}
+	if len(src.Mailbox) > 0 {
+		if dst.Mailbox == nil {
+			dst.Mailbox = map[string]any{}
+		}
+		for k, v := range src.Mailbox {
+			dst.Mailbox[k] = v
+		}
+	}
 	if src.Type != "" {
 		dst.Type = src.Type
 	}
@@ -273,10 +368,24 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 			continue
 		}
 		ctx, cancel := context.WithTimeout(parent, 45*time.Second)
-		client, err := NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+		if ptrString(a.RefreshToken) != "" && (accessTokenNeedsRefresh(a.AccessToken) || isSignupAccessToken(a.AccessToken)) {
+			if refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken); refreshErr == nil {
+				a = refreshed
+			}
+		}
+		client, err := NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
 		if err == nil {
 			var info Account
 			info, err = client.GetUserInfo(ctx)
+			if isInvalidTokenErrorText(err) && ptrString(a.RefreshToken) != "" {
+				if refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken); refreshErr == nil && refreshed.AccessToken != a.AccessToken {
+					a = refreshed
+					client, err = NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+					if err == nil {
+						info, err = client.GetUserInfo(ctx)
+					}
+				}
+			}
 			if err == nil {
 				err = s.store.UpdateAccounts(func(current []Account) []Account {
 					for i := range current {
@@ -294,6 +403,17 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 		}
 		cancel()
 		if err != nil {
+			if isInvalidTokenErrorText(err) {
+				_ = s.store.UpdateAccounts(func(current []Account) []Account {
+					for i := range current {
+						if current[i].AccessToken == a.AccessToken {
+							applyAccountFailureState(&current[i], err, nowISO())
+							break
+						}
+					}
+					return current
+				})
+			}
 			errs = append(errs, map[string]any{"token": a.AccessToken, "error": err.Error()})
 		}
 	}

@@ -30,6 +30,7 @@ type Account struct {
 	Type              string            `json:"type"`
 	SourceType        string            `json:"source_type,omitempty"`
 	ExportType        string            `json:"export_type,omitempty"`
+	IsSignupToken     bool              `json:"is_signup_token,omitempty"`
 	Status            string            `json:"status"`
 	Quota             int               `json:"quota"`
 	InitialQuota      int               `json:"initial_quota,omitempty"`

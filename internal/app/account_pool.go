@@ -71,52 +71,54 @@ func (p *accountPool) pickTokenExcluding(accounts []Account, needCodex bool, cod
 	}
 	premium := map[string]bool{"plus": true, "pro": true, "team": true}
 	now := time.Now().UTC()
-	for offset := 0; offset < len(accounts); offset++ {
-		idx := (p.index + offset) % len(accounts)
-		a := accounts[idx]
-		if a.AccessToken == "" || excluded[a.AccessToken] {
-			continue
-		}
-		if a.Status == "禁用" {
-			continue
-		}
-		if a.Status == "异常" {
-			continue
-		}
-		if a.Status == "限流" {
-			resetAt := firstNonEmpty(ptrString(a.RateLimitResetAt), ptrString(a.RestoreAt))
-			if resetAt != "" {
-				rt, err := parseAccountTime(resetAt)
-				if err != nil || now.Before(rt) {
+	for signupPass := 0; signupPass < 2; signupPass++ {
+		for offset := 0; offset < len(accounts); offset++ {
+			idx := (p.index + offset) % len(accounts)
+			a := accounts[idx]
+			if a.AccessToken == "" || excluded[a.AccessToken] || isSignupAccessToken(a.AccessToken) != (signupPass == 1) {
+				continue
+			}
+			if a.Status == "禁用" {
+				continue
+			}
+			if a.Status == "异常" {
+				continue
+			}
+			if a.Status == "限流" {
+				resetAt := firstNonEmpty(ptrString(a.RateLimitResetAt), ptrString(a.RestoreAt))
+				if resetAt != "" {
+					rt, err := parseAccountTime(resetAt)
+					if err != nil || now.Before(rt) {
+						continue
+					}
+				} else {
 					continue
 				}
-			} else {
+			}
+			if !a.ImageQuotaUnknown && a.Quota <= 0 {
 				continue
 			}
-		}
-		if !a.ImageQuotaUnknown && a.Quota <= 0 {
-			continue
-		}
-		if needCodex {
-			accountType := strings.ToLower(a.Type)
-			if strings.ToLower(a.SourceType) != "codex" {
-				continue
-			}
-			if codexPlanType != "" {
-				if accountType != codexPlanType {
+			if needCodex {
+				accountType := strings.ToLower(a.Type)
+				if strings.ToLower(a.SourceType) != "codex" {
 					continue
 				}
-			} else if !premium[accountType] {
+				if codexPlanType != "" {
+					if accountType != codexPlanType {
+						continue
+					}
+				} else if !premium[accountType] {
+					continue
+				}
+			}
+			// 检查并发槽
+			if p.inflight[a.AccessToken] >= maxConc {
 				continue
 			}
+			p.index = (idx + 1) % len(accounts)
+			p.inflight[a.AccessToken]++
+			return a.AccessToken, nil
 		}
-		// 检查并发槽
-		if p.inflight[a.AccessToken] >= maxConc {
-			continue
-		}
-		p.index = (idx + 1) % len(accounts)
-		p.inflight[a.AccessToken]++
-		return a.AccessToken, nil
 	}
 	if needCodex {
 		return "", errors.New("no available codex Plus/Team/Pro account")

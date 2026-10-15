@@ -13,6 +13,7 @@ export type Account = {
   type: AccountType;
   source_type?: "web" | "codex" | string;
   export_type?: string;
+  is_signup_token?: boolean;
   status: AccountStatus;
   quota: number;
   initial_quota?: number;
@@ -51,6 +52,7 @@ type AccountMutationResponse = {
   skipped?: number;
   removed?: number;
   refreshed?: number;
+  signup_tokens?: number;
   errors?: Array<{ access_token: string; error: string }>;
 };
 

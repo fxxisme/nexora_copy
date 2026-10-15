@@ -64,6 +64,20 @@ func TestTextPoolPrefersLoginTokenWithoutDroppingSignupFallback(t *testing.T) {
 	}
 }
 
+func TestImagePoolPrefersLoginTokenWithoutDroppingSignupFallback(t *testing.T) {
+	signup := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"is_signup":true}}`)) + ".sig"
+	login := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{}}`)) + ".sig"
+	accounts := []Account{{AccessToken: signup, Type: "free", Status: "正常", Quota: 5}, {AccessToken: login, Type: "free", Status: "正常", Quota: 5}}
+	pool := newAccountPool(&Config{})
+	if token, err := pool.pickToken(accounts, false); err != nil || token != login {
+		t.Fatalf("expected login token first, got %q: %v", token, err)
+	}
+	pool.releaseToken(login)
+	if token, err := pool.pickTokenExcluding(accounts, false, "", map[string]bool{login: true}); err != nil || token != signup {
+		t.Fatalf("expected signup token as fallback, got %q: %v", token, err)
+	}
+}
+
 func TestLiveAutoConversationPrefersLoginToken(t *testing.T) {
 	if os.Getenv("CHATGPT2API_LIVE_404_POOL") != "1" {
 		t.Skip("set CHATGPT2API_LIVE_404_POOL=1 for upstream pool verification")

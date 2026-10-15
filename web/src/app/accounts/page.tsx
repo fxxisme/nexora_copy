@@ -328,6 +328,7 @@ function AccountCard({
           >
             {account.status}
           </Badge>
+          {account.is_signup_token ? <Badge variant="outline">注册令牌</Badge> : null}
         </div>
       </div>
 
@@ -1025,6 +1026,7 @@ function AccountsPageContent() {
                             >
                               {displayAccountSource(account)}
                             </Badge>
+                            {account.is_signup_token ? <Badge variant="outline">注册令牌</Badge> : null}
                           </div>
                         </td>
                         <td className="px-4 py-3">

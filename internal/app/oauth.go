@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -12,9 +13,29 @@ import (
 )
 
 const codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+const webOAuthClientID = "app_2SKx67EdpoN0G6j64rFvigXD"
 const codexOAuthTokenURL = "https://auth.openai.com/oauth/token"
 
 func (s *Server) refreshOAuthAccount(ctx context.Context, oldToken string) (Account, error) {
+	return s.refreshOAuthAccountAt(ctx, oldToken, codexOAuthTokenURL)
+}
+
+func accessTokenNeedsRefresh(token string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		ExpiresAt int64 `json:"exp"`
+	}
+	return json.Unmarshal(payload, &claims) == nil && claims.ExpiresAt > 0 && claims.ExpiresAt <= time.Now().Add(24*time.Hour).Unix()
+}
+
+func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL string) (Account, error) {
 	accounts := s.store.LoadAccounts()
 	idx := -1
 	var account Account
@@ -32,7 +53,10 @@ func (s *Server) refreshOAuthAccount(ctx context.Context, oldToken string) (Acco
 	if err != nil {
 		return Account{}, err
 	}
-	clientID := codexOAuthClientID
+	clientID := webOAuthClientID
+	if strings.EqualFold(account.SourceType, "codex") || strings.EqualFold(account.ExportType, "codex") {
+		clientID = codexOAuthClientID
+	}
 	if account.ClientID != nil && strings.TrimSpace(*account.ClientID) != "" {
 		clientID = strings.TrimSpace(*account.ClientID)
 	}
@@ -40,8 +64,10 @@ func (s *Server) refreshOAuthAccount(ctx context.Context, oldToken string) (Acco
 	form.Set("client_id", clientID)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", strings.TrimSpace(*account.RefreshToken))
-	form.Set("scope", "openid profile email")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexOAuthTokenURL, strings.NewReader(form.Encode()))
+	if clientID == codexOAuthClientID {
+		form.Set("scope", "openid profile email")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return Account{}, err
 	}
@@ -69,23 +95,66 @@ func (s *Server) refreshOAuthAccount(ctx context.Context, oldToken string) (Acco
 	}
 	idToken := strings.TrimSpace(strAny(payload["id_token"], ""))
 	expiresIn := intAny(payload["expires_in"], 0)
-	account.AccessToken = newToken
-	account.RefreshToken = &refreshToken
-	if idToken != "" {
-		account.IDToken = &idToken
-	}
-	account.SourceType = "codex"
-	account.ClientID = &clientID
-	if expiresIn > 0 {
-		account.ExpiresAt = time.Now().Unix() + int64(expiresIn)
-	}
-	if account.AccountID == nil || *account.AccountID == "" {
-		if accountID := chatGPTAccountID(newToken); accountID != "" {
-			account.AccountID = &accountID
+	updated := false
+	if err := s.store.UpdateAccounts(func(current []Account) []Account {
+		oldIndex := -1
+		newIndex := -1
+		for i := range current {
+			if current[i].AccessToken == oldToken {
+				oldIndex = i
+			} else if current[i].AccessToken == newToken {
+				newIndex = i
+			}
 		}
+		if oldIndex < 0 {
+			return current
+		}
+		account = current[oldIndex]
+		account.AccessToken = newToken
+		account.RefreshToken = &refreshToken
+		if idToken != "" {
+			account.IDToken = &idToken
+		}
+		account.IsSignupToken = isSignupAccessToken(newToken)
+		account.ClientID = &clientID
+		if expiresIn > 0 {
+			account.ExpiresAt = time.Now().Unix() + int64(expiresIn)
+		}
+		if account.AccountID == nil || *account.AccountID == "" {
+			if accountID := chatGPTAccountID(newToken); accountID != "" {
+				account.AccountID = &accountID
+			}
+		}
+		if newIndex >= 0 {
+			existing := current[newIndex]
+			merged := account
+			mergeAccount(&merged, existing)
+			merged.AccessToken = newToken
+			merged.IsSignupToken = account.IsSignupToken
+			merged.RefreshToken = &refreshToken
+			merged.ClientID = &clientID
+			if idToken != "" {
+				merged.IDToken = &idToken
+			}
+			merged.ExpiresAt = account.ExpiresAt
+			merged.Quota = existing.Quota
+			merged.ImageQuotaUnknown = existing.ImageQuotaUnknown
+			merged.Success = existing.Success
+			merged.Fail = existing.Fail
+			account = merged
+			current[newIndex] = account
+			current = append(current[:oldIndex], current[oldIndex+1:]...)
+		} else {
+			current[oldIndex] = account
+		}
+		updated = true
+		return current
+	}); err != nil {
+		return Account{}, err
 	}
-	accounts[idx] = account
-	_ = s.store.SaveAccounts(accounts)
+	if !updated {
+		return Account{}, fmt.Errorf("account was removed during token refresh")
+	}
 	return account, nil
 }
 
@@ -98,7 +167,7 @@ func (s *Server) refreshOAuthAccessToken(ctx context.Context, oldToken string) (
 }
 
 func (s *Server) upstreamClientForTokenWithRefresh(ctx context.Context, token string) (*UpstreamClient, error) {
-	client, err := NewUpstreamClientForAccount(s.accountByToken(token), s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+	client, err := NewUpstreamClientForAccount(s.accountByToken(token), s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
 	if err == nil {
 		return client, nil
 	}
@@ -106,5 +175,5 @@ func (s *Server) upstreamClientForTokenWithRefresh(ctx context.Context, token st
 	if refreshErr != nil {
 		return nil, err
 	}
-	return NewUpstreamClientForAccount(s.accountByToken(newToken), s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+	return NewUpstreamClientForAccount(s.accountByToken(newToken), s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
 }

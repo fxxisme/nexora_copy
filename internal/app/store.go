@@ -60,6 +60,7 @@ func (s *Store) LoadAccounts() []Account {
 		if a.AccessToken == "" {
 			continue
 		}
+		a.IsSignupToken = isSignupAccessToken(a.AccessToken)
 		if a.Type == "" {
 			a.Type = "free"
 		}
