@@ -389,14 +389,16 @@ config.json
 | `CHATGPT2API_CURL_IMPERSONATE_BIN` | 指定 `curl-impersonate` 二进制路径 |
 | `CHATGPT2API_CURL_IMPERSONATE_URL` | 指定 `curl-impersonate` 下载地址 |
 | `CHATGPT2API_TLS_PROFILE` | 指定 tls-client 指纹 profile |
-| `CHATGPT2API_CHROME_BIN` | 指定本地 Sentinel 求解使用的 Chrome/Chromium 可执行文件 |
-| `CHATGPT2API_UPSTREAM_TIMEZONE` | 指定上游请求和本地浏览器共同使用的 IANA 时区，默认取系统时区 |
+| `CHATGPT2API_SENTINEL_MODE` | 默认 `goja`，仅需 Go 进程；可选 `browser` 或试验性 `node` |
+| `CHATGPT2API_CHROME_BIN` | `browser` 模式使用的 Chrome/Chromium 可执行文件 |
+| `CHATGPT2API_NODE_BIN` | `node` 模式使用的 Node.js 可执行文件 |
+| `CHATGPT2API_UPSTREAM_TIMEZONE` | 指定上游请求和求解器共同使用的 IANA 时区，默认取系统时区 |
 | `CHATGPT2API_USER_AGENT` | 覆盖默认 User-Agent |
 | `CHATGPT2API_SEC_CH_UA` | 覆盖默认 `Sec-Ch-Ua` |
 | `CHATGPT2API_TRACE` | 设置为 `0`、`false`、`off`、`no`、`quiet` 可关闭终端链路追踪 |
 | `CHATGPT2API_NETWORK_TRACE` | 同样用于关闭终端链路追踪 |
 
-Sentinel 需要 Turnstile token 时，Go 进程会自动启动本机无头 Chrome/Chromium，在 `chatgpt.com` 页面执行前端求解脚本。不需要单独启动 `sentinel_solver` 或监听 `18080`。Ubuntu 上需先安装 Chrome/Chromium 及其系统依赖；若可执行文件不在 `PATH`，设置 `CHATGPT2API_CHROME_BIN`。浏览器访问上游会沿用配置中的 HTTP 代理，代理出口应与 Go 上游请求一致。
+Sentinel 需要 Turnstile token 时，默认由 Go 进程内的 Goja 执行挑战 VM；无需 Chrome、Node.js、`sentinel_solver` 或 `18080`。设置 `CHATGPT2API_SENTINEL_MODE=browser` 可改用本机 Chrome/Chromium，设置 `CHATGPT2API_SENTINEL_MODE=node` 可试验 Node.js 22 求解。上游请求与求解器应使用一致的时区和代理出口。
 
 ## 上游传输模式
 

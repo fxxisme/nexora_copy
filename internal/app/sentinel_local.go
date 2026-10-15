@@ -21,9 +21,15 @@ import (
 )
 
 type sentinelIdentity struct {
-	UserAgent  string `json:"user_agent"`
-	Timezone   string `json:"timezone"`
-	DateString string `json:"date_string"`
+	UserAgent           string `json:"user_agent"`
+	Timezone            string `json:"timezone"`
+	DateString          string `json:"date_string"`
+	ScreenSize          int    `json:"screen_size"`
+	HeapLimit           int64  `json:"heap_limit"`
+	Language            string `json:"language"`
+	Languages           string `json:"languages"`
+	HardwareConcurrency int    `json:"hardware_concurrency"`
+	Vendor              string `json:"vendor"`
 }
 
 type sentinelLocalSolver interface {
@@ -234,7 +240,7 @@ func (s *browserSentinelSolver) Identity(ctx context.Context) (sentinelIdentity,
 	}
 	runCtx, cancel := s.runContext(ctx, 10*time.Second)
 	defer cancel()
-	identity, err := chromedp.Run(runCtx, chromedp.Evaluate[sentinelIdentity](`({user_agent:navigator.userAgent,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,date_string:String(new Date())})`))
+	identity, err := chromedp.Run(runCtx, chromedp.Evaluate[sentinelIdentity](`({user_agent:navigator.userAgent,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,date_string:String(new Date()),screen_size:screen.width+screen.height,heap_limit:performance.memory?.jsHeapSizeLimit||0,language:navigator.language,languages:navigator.languages.join(','),hardware_concurrency:navigator.hardwareConcurrency,vendor:navigator.vendor})`))
 	if err != nil {
 		return sentinelIdentity{}, err
 	}

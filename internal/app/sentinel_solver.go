@@ -43,6 +43,7 @@ func (c *UpstreamClient) sentinelUserAgent(ctx context.Context) (string, error) 
 			if err != nil {
 				return "", fmt.Errorf("local sentinel solver: %w", err)
 			}
+			c.sentinelIdentity = identity
 			c.timezone = identity.Timezone
 			c.browserDate = identity.DateString
 			return identity.UserAgent, nil

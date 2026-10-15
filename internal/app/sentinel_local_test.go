@@ -38,9 +38,9 @@ func TestLocalSentinelIdentityAndTokenValidation(t *testing.T) {
 	if _, err := client.solveSentinelTurnstile(context.Background(), "dx", "p", nil); err == nil || !strings.Contains(err.Error(), "echoed") {
 		t.Fatalf("echoed token error=%v", err)
 	}
-	client.localSolver = fakeSentinelLocalSolver{err: errors.New("browser unavailable")}
-	if _, err := client.solveSentinelTurnstile(context.Background(), "dx", "p", nil); err == nil || !strings.Contains(err.Error(), "browser unavailable") {
-		t.Fatalf("browser error=%v", err)
+	client.localSolver = fakeSentinelLocalSolver{err: errors.New("solver unavailable")}
+	if _, err := client.solveSentinelTurnstile(context.Background(), "dx", "p", nil); err == nil || !strings.Contains(err.Error(), "solver unavailable") {
+		t.Fatalf("solver error=%v", err)
 	}
 }
 
@@ -69,12 +69,10 @@ func TestLiveLocalSentinelHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, char := range identity.DateString {
-		if char > 127 {
-			t.Fatal("browser Date fingerprint must use an ASCII timezone name")
-		}
+	if identity.Timezone == "" || identity.DateString == "" {
+		t.Fatal("solver identity is incomplete")
 	}
-	t.Logf("browser ready: timezone=%s user-agent=%s", identity.Timezone, identity.UserAgent)
+	t.Logf("fingerprint: timezone=%s screen=%d heap=%d language=%s languages=%s hardware=%d vendor=%s", identity.Timezone, identity.ScreenSize, identity.HeapLimit, identity.Language, identity.Languages, identity.HardwareConcurrency, identity.Vendor)
 	requirements, err := client.chatRequirements(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -123,20 +121,62 @@ func TestLiveLocalSentinelConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer CloseSentinelSolvers()
+	if os.Getenv("CHATGPT2API_LIVE_ACCOUNT_DIAG") == "1" {
+		diagCtx, diagCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer diagCancel()
+		payload, err := client.getJSON(diagCtx, "GET", "/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accounts, _ := payload["accounts"].(map[string]any)
+		defaultAccount, _ := accounts["default"].(map[string]any)
+		account, _ := defaultAccount["account"].(map[string]any)
+		defaultID := strAny(account["account_id"], "")
+		t.Logf("account id: jwt_present=%t default_present=%t equal=%t plan=%s deactivated=%v trial=%v view_only=%v", chatGPTAccountID(selected.AccessToken) != "", defaultID != "", defaultID == chatGPTAccountID(selected.AccessToken), strAny(account["plan_type"], ""), account["is_deactivated"], account["is_trial"], account["is_view_only"])
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	events, errs := client.StreamTextConversationEvents(ctx, []map[string]any{{"role": "user", "content": "Reply with exactly: OK"}}, "auto", "")
-	var gotContent bool
+	runImage := func() {
+		t.Helper()
+		imageCtx, imageCancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer imageCancel()
+		images, err := client.GenerateImage(imageCtx, "A small red square centered on a plain white background", "gpt-image-2", "1024x1024", "", nil, imageGenerationOptions{Timeout: 3 * time.Minute})
+		if err != nil {
+			t.Fatalf("image generation failed: %v", err)
+		}
+		if len(images) == 0 || len(images[0].Bytes) < 1000 {
+			t.Fatalf("image result is empty: count=%d", len(images))
+		}
+		t.Logf("image generation returned %d image(s), first image bytes=%d", len(images), len(images[0].Bytes))
+	}
+	if os.Getenv("CHATGPT2API_LIVE_IMAGE_ONLY") == "1" {
+		runImage()
+		return
+	}
+	model := os.Getenv("CHATGPT2API_LIVE_MODEL")
+	if model == "" {
+		model = "auto"
+	}
+	stream := client.StreamTextConversationEvents
+	if os.Getenv("CHATGPT2API_LIVE_CHAT_HISTORY") == "1" {
+		stream = client.StreamChatConversationEvents
+	}
+	events, errs := stream(ctx, []map[string]any{{"role": "user", "content": "Reply with exactly: OK"}}, model, "")
+	var content strings.Builder
 	for event := range events {
-		gotContent = gotContent || event.Delta != ""
+		content.WriteString(event.Delta)
 	}
 	for err := range errs {
 		if err != nil {
 			t.Fatalf("conversation failed: %v", err)
 		}
 	}
-	if !gotContent {
-		t.Fatal("conversation completed without response content")
+	if !strings.Contains(strings.ToUpper(content.String()), "OK") {
+		t.Fatalf("conversation did not return the requested acknowledgement: response_len=%d", content.Len())
 	}
-	t.Log("conversation received response content")
+	t.Log("conversation returned requested acknowledgement")
+	if os.Getenv("CHATGPT2API_LIVE_IMAGE") == "1" {
+		runImage()
+	}
 }

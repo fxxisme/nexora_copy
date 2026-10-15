@@ -51,6 +51,7 @@ type UpstreamClient struct {
 	solverURL        string
 	solverKey        string
 	localSolver      sentinelLocalSolver
+	sentinelIdentity sentinelIdentity
 	timezone         string
 	browserDate      string
 	imageTurnTrace   string
@@ -119,7 +120,14 @@ func NewUpstreamClientForAccount(account Account, proxyURL string, binGetter fun
 	solverKey := firstNonEmpty(os.Getenv("CHATGPT2API_SENTINEL_SOLVER_KEY"), cfg.SentinelSolverKey)
 	upstream := &UpstreamClient{token: token, defaultModelSlug: ptrString(account.DefaultModelSlug), client: client, userAgent: fp["user-agent"], deviceID: fp["oai-device-id"], sessionID: fp["oai-session-id"], secCHUA: fp["sec-ch-ua"], secCHUAMobile: fp["sec-ch-ua-mobile"], secCHUAPlatform: fp["sec-ch-ua-platform"], scriptSources: []string{defaultPowScript}, solverURL: strings.TrimRight(strings.TrimSpace(solverURL), "/"), solverKey: strings.TrimSpace(solverKey)}
 	if upstream.solverURL == "" {
-		upstream.localSolver = sharedSentinelSolver(proxyURL, upstream.userAgent)
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("CHATGPT2API_SENTINEL_MODE"))) {
+		case "browser":
+			upstream.localSolver = sharedSentinelSolver(proxyURL, upstream.userAgent)
+		case "node":
+			upstream.localSolver = &nodeSentinelSolver{client: upstream}
+		default:
+			upstream.localSolver = &gojaSentinelSolver{client: upstream}
+		}
 	}
 	return upstream, nil
 }
@@ -337,7 +345,7 @@ func (c *UpstreamClient) chatRequirements(ctx context.Context) (chatRequirements
 	if err != nil {
 		return chatRequirements{}, err
 	}
-	p := buildLegacyRequirementsToken(ua, c.scriptSources, c.dataBuild, c.powDate())
+	p := buildLegacyRequirementsToken(ua, c.scriptSources, c.dataBuild, c.powDate(), c.sentinelIdentity)
 	resp, err := c.do(ctx, http.MethodPost, base+"/prepare", map[string]string{"Content-Type": "application/json"}, map[string]any{"p": p}, false)
 	if err != nil {
 		return chatRequirements{}, err
@@ -357,7 +365,7 @@ func (c *UpstreamClient) chatRequirements(ctx context.Context) (chatRequirements
 	}
 	cr := chatRequirements{}
 	if pow, ok := prepared["proofofwork"].(map[string]any); ok && boolAny(pow["required"], false) {
-		proof, err := buildProofToken(strAny(pow["seed"], ""), strAny(pow["difficulty"], ""), ua, c.scriptSources, c.dataBuild, c.powDate())
+		proof, err := buildProofToken(strAny(pow["seed"], ""), strAny(pow["difficulty"], ""), ua, c.scriptSources, c.dataBuild, c.powDate(), c.sentinelIdentity)
 		if err != nil {
 			return cr, err
 		}
@@ -1996,7 +2004,7 @@ func (c *UpstreamClient) powDate() string {
 	return date.Format("Mon Jan 02 2006 15:04:05 GMT-0700") + " (" + label + ")"
 }
 
-func buildPowConfig(ua string, scripts []string, dataBuild, date string) []any {
+func buildPowConfig(ua string, scripts []string, dataBuild, date string, identity sentinelIdentity) []any {
 	nav := []string{"webdriver−false", "vendor−Google Inc.", "hardwareConcurrency−32", "language−zh-CN", "cookieEnabled−true"}
 	win := []string{"window", "document", "location", "navigator", "crypto", "fetch", "screen"}
 	script := defaultPowScript
@@ -2004,7 +2012,26 @@ func buildPowConfig(ua string, scripts []string, dataBuild, date string) []any {
 		script = scripts[rand.Intn(len(scripts))]
 	}
 	now := time.Now()
-	return []any{[]int{3000, 4000, 5000}[rand.Intn(3)], date, 4294705152, 1, ua, script, dataBuild, "en-US", "en-US,es-US,en,es", rand.Float64(), nav[rand.Intn(len(nav))], "location", win[rand.Intn(len(win))], float64(now.UnixNano()) / 1e6, uuid4(), "", []int{8, 16, 24, 32}[rand.Intn(4)], float64(now.UnixNano())/1e6 - 1000, 0, 0, 0, 0, 0, 0, 0}
+	cfg := []any{[]int{3000, 4000, 5000}[rand.Intn(3)], date, int64(4294705152), 1, ua, script, dataBuild, "en-US", "en-US,es-US,en,es", rand.Float64(), nav[rand.Intn(len(nav))], "location", win[rand.Intn(len(win))], float64(now.UnixNano()) / 1e6, uuid4(), "", []int{8, 16, 24, 32}[rand.Intn(4)], float64(now.UnixNano())/1e6 - 1000, 0, 0, 0, 0, 0, 0, 0}
+	if identity.ScreenSize > 0 {
+		cfg[0] = identity.ScreenSize
+	}
+	if identity.HeapLimit > 0 {
+		cfg[2] = identity.HeapLimit
+	}
+	if identity.Language != "" {
+		cfg[7] = identity.Language
+	}
+	if identity.Languages != "" {
+		cfg[8] = identity.Languages
+	}
+	if identity.Vendor != "" {
+		cfg[10] = "vendor−" + identity.Vendor
+	}
+	if identity.HardwareConcurrency > 0 {
+		cfg[16] = identity.HardwareConcurrency
+	}
+	return cfg
 }
 func powGenerate(seed, diff string, cfg []any, limit int) (string, bool) {
 	target := strings.ToLower(strings.TrimSpace(diff))
@@ -2036,11 +2063,11 @@ func fnv1a32(s string) uint32 {
 	h ^= h >> 16
 	return h
 }
-func buildLegacyRequirementsToken(ua string, scripts []string, dataBuild, date string) string {
-	return "gAAAAAC" + base64.StdEncoding.EncodeToString([]byte(jsonCompact(buildPowConfig(ua, scripts, dataBuild, date))))
+func buildLegacyRequirementsToken(ua string, scripts []string, dataBuild, date string, identity sentinelIdentity) string {
+	return "gAAAAAC" + base64.StdEncoding.EncodeToString([]byte(jsonCompact(buildPowConfig(ua, scripts, dataBuild, date, identity))))
 }
-func buildProofToken(seed, diff, ua string, scripts []string, dataBuild, date string) (string, error) {
-	ans, ok := powGenerate(seed, diff, buildPowConfig(ua, scripts, dataBuild, date), 500000)
+func buildProofToken(seed, diff, ua string, scripts []string, dataBuild, date string, identity sentinelIdentity) (string, error) {
+	ans, ok := powGenerate(seed, diff, buildPowConfig(ua, scripts, dataBuild, date, identity), 500000)
 	if !ok {
 		return "", fmt.Errorf("failed to solve proof token: difficulty=%s", diff)
 	}

@@ -1,9 +1,8 @@
 // chatgpt.com sentinel 挑战程序的执行器（Turnstile 与 SO）。
 //
 // 移植自 chatgpt.com 前端 bundle 里的两套同构 VM（2026-10 版本，指令编号 0-35）。
-// 挑战程序会读取真实页面里的 window/document/navigator 等属性，结果只在真正的
-// chatgpt.com 页面上下文里才会被服务端接受，所以这段脚本通过 add_init_script
-// 注入到常驻页面，由求解服务按需调用 window.__sentinelVM。
+// 挑战程序会读取 window/document/navigator 等属性。默认的 Goja 模式模拟
+// 这些属性；浏览器模式在真实页面执行。
 (() => {
   const xor = (text, key) => {
     let out = "";

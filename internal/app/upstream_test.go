@@ -502,7 +502,7 @@ func TestChatRequirementsFailsWhenTurnstileSolverUnconfigured(t *testing.T) {
 }
 
 func TestSentinelProofTokenFormatAndDifficulty(t *testing.T) {
-	proof, err := buildProofToken("seed", "00ff", "test-agent", []string{defaultPowScript}, "test-build", "Thu Oct 15 2026 06:00:00 GMT-0700 (Pacific Daylight Time)")
+	proof, err := buildProofToken("seed", "00ff", "test-agent", []string{defaultPowScript}, "test-build", "Thu Oct 15 2026 06:00:00 GMT-0700 (Pacific Daylight Time)", sentinelIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,6 +523,23 @@ func TestSentinelProofTokenFormatAndDifficulty(t *testing.T) {
 	}
 	if len(config) != 25 || config[4] != "test-agent" || config[6] != "test-build" {
 		t.Fatalf("proof config = %#v", config)
+	}
+}
+
+func TestPowConfigUsesSolverFingerprint(t *testing.T) {
+	identity := sentinelIdentity{
+		ScreenSize: 1400, HeapLimit: 4395630592, Language: "zh-CN",
+		Languages: "zh-CN,zh;q=0.9,en;q=0.8", HardwareConcurrency: 8,
+		Vendor: "Google Inc.",
+	}
+	config := buildPowConfig("test-agent", nil, "test-build", "test-date", identity)
+	for index, want := range map[int]any{
+		0: 1400, 2: int64(4395630592), 7: identity.Language,
+		8: identity.Languages, 10: "vendor−Google Inc.", 16: 8,
+	} {
+		if config[index] != want {
+			t.Fatalf("fingerprint config[%d] = %v, want %v", index, config[index], want)
+		}
 	}
 }
 
@@ -552,7 +569,7 @@ func TestPowDateMatchesConversationTimezone(t *testing.T) {
 			if name != tc.name || offset != -seconds/60 || !strings.HasSuffix(date, wantDate) {
 				t.Fatalf("timezone = %q offset=%d date=%q", name, offset, date)
 			}
-			if got := buildPowConfig("test-agent", nil, "test-build", date)[1]; got != date {
+			if got := buildPowConfig("test-agent", nil, "test-build", date, sentinelIdentity{})[1]; got != date {
 				t.Fatalf("proof date = %q, want %q", got, date)
 			}
 		})
