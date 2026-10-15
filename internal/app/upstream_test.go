@@ -322,6 +322,33 @@ func TestImageConversationPrepareAndSendStates(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestImageIDsAfterSSEPollsTextOnlyTurn(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != "/backend-api/conversation/conversation-1" {
+			t.Fatalf("unexpected request path %s", req.URL.Path)
+		}
+		return upstreamTestResponse(200, `{"mapping":{"image":{"message":{"author":{"role":"tool"},"metadata":{"async_task_type":"image_gen"},"content":{"content_type":"multimodal_text","parts":[{"asset_pointer":"file-service://file_generated"}]}}}}}`), nil
+	})}
+	state := &upstreamConversationState{ToolInvoked: false, TurnUseCase: "image gen"}
+	files, sediments, err := client.imageIDsAfterSSE(context.Background(), "conversation-1", "已为你生成图片", state, nil, nil, imageGenerationOptions{Timeout: time.Second, PollInterval: time.Millisecond})
+	if err != nil || len(files) != 1 || files[0] != "file_generated" || len(sediments) != 0 || requests != 1 {
+		t.Fatalf("text-only turn image lookup: files=%v sediments=%v requests=%d err=%v", files, sediments, requests, err)
+	}
+
+	state.Blocked = true
+	_, _, err = client.imageIDsAfterSSE(context.Background(), "conversation-1", "blocked", state, nil, nil, imageGenerationOptions{Timeout: time.Second})
+	if err == nil || requests != 1 {
+		t.Fatalf("blocked turn should not poll: requests=%d err=%v", requests, err)
+	}
+	state.Blocked = false
+	_, _, err = client.imageIDsAfterSSE(context.Background(), "conversation-1", "You've hit your free plan limit for image generation", state, nil, nil, imageGenerationOptions{Timeout: time.Second})
+	if err == nil || requests != 1 {
+		t.Fatalf("quota message should not poll: requests=%d err=%v", requests, err)
+	}
+}
+
 func TestAuthenticatedHeadersIncludeChatGPTAccountID(t *testing.T) {
 	claim, _ := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "account-123"}})
 	token := "header." + base64.RawURLEncoding.EncodeToString(claim) + ".signature"

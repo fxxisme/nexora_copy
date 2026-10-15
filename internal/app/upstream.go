@@ -606,14 +606,10 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 			return nil, fmt.Errorf("image generation SSE timed out (%ds)", int(opts.Timeout/time.Second))
 		}
 	}
-	if message != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 && (state.Blocked || state.ToolInvoked == false || state.TurnUseCase == "text") {
-		return nil, errors.New(cleanImageMessage(message))
-	}
-	if cid != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 && !isImageQuotaMessage(message) {
-		traceLogf(ctx, "│  ├─ step poll final image tool records conversation=%s timeout=%s interval=%s", maskedValue(cid), opts.Timeout, opts.PollInterval)
-		f, s := c.pollImageIDs(ctx, cid, opts.Timeout, opts.PollInterval, opts.PollInitialWait)
-		fileIDs = append(fileIDs, f...)
-		sedimentIDs = append(sedimentIDs, s...)
+	traceLogf(ctx, "│  ├─ image SSE result blocked=%t tool_invoked=%v turn_use_case=%q file_ids=%d sediment_ids=%d text_len=%d", state.Blocked, state.ToolInvoked, state.TurnUseCase, len(fileIDs), len(sedimentIDs), len(message))
+	fileIDs, sedimentIDs, err = c.imageIDsAfterSSE(ctx, cid, message, state, fileIDs, sedimentIDs, opts)
+	if err != nil {
+		return nil, err
 	}
 	traceLogf(ctx, "│  ├─ step resolve image download URLs file_ids=%d sediment_ids=%d", len(fileIDs), len(sedimentIDs))
 	urls, err := c.resolveImageURLs(ctx, cid, fileIDs, sedimentIDs)
@@ -644,6 +640,19 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 	}
 	traceLogf(ctx, "└─ image generation done images=%d", len(results))
 	return results, nil
+}
+
+func (c *UpstreamClient) imageIDsAfterSSE(ctx context.Context, cid, message string, state *upstreamConversationState, fileIDs, sedimentIDs []string, opts imageGenerationOptions) ([]string, []string, error) {
+	if cid != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 && !state.Blocked && !isImageQuotaMessage(message) {
+		traceLogf(ctx, "│  ├─ step poll final image tool records conversation=%s timeout=%s interval=%s", maskedValue(cid), opts.Timeout, opts.PollInterval)
+		f, s := c.pollImageIDs(ctx, cid, opts.Timeout, opts.PollInterval, opts.PollInitialWait)
+		fileIDs = append(fileIDs, f...)
+		sedimentIDs = append(sedimentIDs, s...)
+	}
+	if message != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 && (state.Blocked || state.ToolInvoked == false || state.TurnUseCase == "text") {
+		return nil, nil, errors.New(cleanImageMessage(message))
+	}
+	return fileIDs, sedimentIDs, nil
 }
 func (c *UpstreamClient) prepareImage(ctx context.Context, prompt, model string, cr chatRequirements) (string, error) {
 	path := "/backend-api/f/conversation/prepare"
