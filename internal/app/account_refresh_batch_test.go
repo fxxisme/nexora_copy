@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,6 +46,25 @@ func TestAccountRefreshBatchHonorsCancellation(t *testing.T) {
 	if len(results) != 1 || !errors.Is(results[0], context.Canceled) {
 		t.Fatalf("canceled batch results = %v", results)
 	}
+}
+
+func TestAccountRefreshSlotSharedAndCancelable(t *testing.T) {
+	s := &Server{accountPool: &accountPool{refreshSlots: make(chan struct{}, 1)}}
+	release, err := s.acquireAccountRefreshSlot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.acquireAccountRefreshSlot(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiting for occupied slot: %v", err)
+	}
+	release()
+	releaseNext, err := s.acquireAccountRefreshSlot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseNext()
 }
 
 func TestLimitedWatcherRefreshPreservesConcurrentChanges(t *testing.T) {
@@ -117,13 +137,53 @@ func TestUnknownQuotaDoesNotReleaseLimitedAccount(t *testing.T) {
 	}
 }
 
-func TestGetUserInfoDoesNotGuessPlanOnCheckFailure(t *testing.T) {
+func TestGetUserInfoRequiresAllAccountChecks(t *testing.T) {
 	client := &UpstreamClient{token: "token", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
 		case "/backend-api/me":
 			return upstreamTestResponse(200, `{"email":"user@example.com"}`), nil
-		case "/backend-api/conversation/init", "/backend-api/accounts/check/v4-2023-04-27":
+		case "/backend-api/conversation/init":
 			return upstreamTestResponse(503, "unavailable"), nil
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			return upstreamTestResponse(200, `{"accounts":{"default":{"account":{"plan_type":"plus"}}}}`), nil
+		default:
+			t.Fatalf("unexpected account info path %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+	if _, err := client.GetUserInfo(context.Background()); err == nil || !strings.Contains(err.Error(), "conversation/init") {
+		t.Fatalf("missing quota request should fail refresh: %v", err)
+	}
+}
+
+func TestGetUserInfoPrefersAuthenticationFailure(t *testing.T) {
+	client := &UpstreamClient{token: "token", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/backend-api/me":
+			return upstreamTestResponse(200, `{"email":"user@example.com"}`), nil
+		case "/backend-api/conversation/init":
+			return upstreamTestResponse(503, "unavailable"), nil
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			return upstreamTestResponse(401, `{"error":"unauthorized"}`), nil
+		default:
+			t.Fatalf("unexpected account info path %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+	if _, err := client.GetUserInfo(context.Background()); !isInvalidTokenErrorText(err) {
+		t.Fatalf("authentication failure should take precedence: %v", err)
+	}
+}
+
+func TestGetUserInfoKeepsUnknownQuotaWhenChecksSucceed(t *testing.T) {
+	client := &UpstreamClient{token: "token", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/backend-api/me":
+			return upstreamTestResponse(200, `{"email":"user@example.com"}`), nil
+		case "/backend-api/conversation/init":
+			return upstreamTestResponse(200, `{"limits_progress":[]}`), nil
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			return upstreamTestResponse(200, `{"accounts":{"default":{"account":{}}}}`), nil
 		default:
 			t.Fatalf("unexpected account info path %s", req.URL.Path)
 			return nil, nil

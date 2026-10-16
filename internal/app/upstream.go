@@ -1107,43 +1107,54 @@ func (c *UpstreamClient) GetUserInfo(ctx context.Context) (Account, error) {
 	if c.token == "" {
 		return Account{}, errors.New("access_token is required")
 	}
-	me, err := c.getJSON(ctx, http.MethodGet, "/backend-api/me", map[string]string{"Accept": "application/json"}, nil)
-	if err != nil {
-		return Account{}, err
-	}
+	me, meErr := c.getJSON(ctx, http.MethodGet, "/backend-api/me", map[string]string{"Accept": "application/json"}, nil)
 	initPayload, initErr := c.getJSON(ctx, http.MethodPost, "/backend-api/conversation/init", map[string]string{"Content-Type": "application/json", "Accept": "application/json"}, map[string]any{"gizmo_id": nil, "requested_default_model": nil, "conversation_id": nil, "timezone_offset_min": -480})
 	accountPayload, accountErr := c.getJSON(ctx, http.MethodGet, "/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480", map[string]string{"Accept": "application/json", "X-OpenAI-Target-Path": "/backend-api/accounts/check/v4-2023-04-27", "X-OpenAI-Target-Route": "/backend-api/accounts/check/v4-2023-04-27"}, nil)
+	checks := []struct {
+		path string
+		err  error
+	}{
+		{"GET /backend-api/me", meErr},
+		{"POST /backend-api/conversation/init", initErr},
+		{"GET /backend-api/accounts/check/v4-2023-04-27", accountErr},
+	}
+	for _, check := range checks {
+		if isInvalidTokenErrorText(check.err) {
+			return Account{}, fmt.Errorf("%s: %w", check.path, check.err)
+		}
+	}
+	for _, check := range checks {
+		if check.err != nil {
+			return Account{}, fmt.Errorf("%s: %w", check.path, check.err)
+		}
+	}
 	planType := ""
-	if accountErr == nil {
-		if accounts, ok := accountPayload["accounts"].(map[string]any); ok {
-			if def, ok := accounts["default"].(map[string]any); ok {
-				if acct, ok := def["account"].(map[string]any); ok {
-					if plan := strAny(acct["plan_type"], ""); plan != "" {
-						planType = normalizeAccountType(plan)
-					}
+	if accounts, ok := accountPayload["accounts"].(map[string]any); ok {
+		if def, ok := accounts["default"].(map[string]any); ok {
+			if acct, ok := def["account"].(map[string]any); ok {
+				if plan := strAny(acct["plan_type"], ""); plan != "" {
+					planType = normalizeAccountType(plan)
 				}
 			}
 		}
 	}
 	quota, restoreAt, quotaUnknown, limits := 0, "", true, []map[string]any{}
 	defaultModel := ""
-	if initErr == nil {
-		if arr, ok := initPayload["limits_progress"].([]any); ok {
-			for _, item := range arr {
-				m, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				limits = append(limits, m)
-				if strAny(m["feature_name"], "") == "image_gen" {
-					quota = intAny(m["remaining"], 0)
-					restoreAt = strAny(m["reset_after"], strAny(m["resets_at"], ""))
-					quotaUnknown = false
-				}
+	if arr, ok := initPayload["limits_progress"].([]any); ok {
+		for _, item := range arr {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			limits = append(limits, m)
+			if strAny(m["feature_name"], "") == "image_gen" {
+				quota = intAny(m["remaining"], 0)
+				restoreAt = strAny(m["reset_after"], strAny(m["resets_at"], ""))
+				quotaUnknown = false
 			}
 		}
-		defaultModel = strAny(initPayload["default_model_slug"], "")
 	}
+	defaultModel = strAny(initPayload["default_model_slug"], "")
 	status := "正常"
 	if !quotaUnknown && quota <= 0 {
 		status = "限流"

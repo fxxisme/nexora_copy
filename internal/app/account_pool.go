@@ -10,14 +10,15 @@ import (
 )
 
 type accountPool struct {
-	mu       sync.Mutex
-	index    int
-	inflight map[string]int
-	cfg      *Config
+	mu           sync.Mutex
+	index        int
+	inflight     map[string]int
+	refreshSlots chan struct{}
+	cfg          *Config
 }
 
 func newAccountPool(cfg *Config) *accountPool {
-	return &accountPool{inflight: make(map[string]int), cfg: cfg}
+	return &accountPool{inflight: make(map[string]int), refreshSlots: make(chan struct{}, 8), cfg: cfg}
 }
 
 func ptrString(v *string) string {

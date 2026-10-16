@@ -27,12 +27,19 @@ func (s *Server) startLimitedAccountWatcher() {
 			log.Printf("[account-limited-watcher] checking %d limited accounts", len(limited))
 			for _, observed := range limited {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				client, err := NewUpstreamClientForAccount(observed, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+				release, err := s.acquireAccountRefreshSlot(ctx)
 				if err != nil {
 					cancel()
 					continue
 				}
+				client, err := NewUpstreamClientForAccount(observed, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+				if err != nil {
+					release()
+					cancel()
+					continue
+				}
 				info, err := client.GetUserInfo(ctx)
+				release()
 				cancel()
 				if err != nil {
 					continue

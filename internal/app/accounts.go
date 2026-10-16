@@ -425,6 +425,11 @@ func runAccountRefreshBatch(parent context.Context, accounts []Account, refresh 
 }
 
 func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
+	release, err := s.acquireAccountRefreshSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if ptrString(a.RefreshToken) != "" && (accessTokenNeedsRefresh(a.AccessToken) || isSignupAccessToken(a.AccessToken)) {
 		if refreshed, err := s.refreshOAuthAccount(ctx, a.AccessToken); err == nil {
 			a = refreshed
@@ -459,6 +464,18 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 		})
 	}
 	return err
+}
+
+func (s *Server) acquireAccountRefreshSlot(ctx context.Context) (func(), error) {
+	if s.accountPool == nil || s.accountPool.refreshSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.accountPool.refreshSlots <- struct{}{}:
+		return func() { <-s.accountPool.refreshSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Server) applyAccountInfoRefresh(observed, info Account) error {
