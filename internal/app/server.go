@@ -14,24 +14,25 @@ import (
 )
 
 type Server struct {
-	root             string
-	dataDir          string
-	imagesDir        string
-	webDist          string
-	cfg              Config
-	store            *Store
-	mux              *http.ServeMux
-	accMu            sync.Mutex
-	authMu           sync.Mutex
-	taskMu           sync.Mutex
-	galleryMu        sync.Mutex
-	logMu            sync.Mutex
-	imageCleanupMu   sync.Mutex
-	lastImageCleanup time.Time
-	callStarts       map[string]time.Time
-	taskCancels      map[string]context.CancelFunc
-	accountPool      *accountPool
-	logSvc           *logService
+	root               string
+	dataDir            string
+	imagesDir          string
+	webDist            string
+	cfg                Config
+	store              *Store
+	mux                *http.ServeMux
+	accMu              sync.Mutex
+	authMu             sync.Mutex
+	taskMu             sync.Mutex
+	galleryMu          sync.Mutex
+	logMu              sync.Mutex
+	imageCleanupMu     sync.Mutex
+	lastImageCleanup   time.Time
+	callStarts         map[string]time.Time
+	taskCancels        map[string]context.CancelFunc
+	accountPool        *accountPool
+	accountRefreshJobs accountRefreshJobs
+	logSvc             *logService
 }
 
 func NewServer(root string) (*Server, error) {
@@ -176,6 +177,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/users/", s.handleAuthUserID)
 	s.mux.HandleFunc("/api/accounts", s.handleAccounts)
 	s.mux.HandleFunc("/api/accounts/refresh", s.handleAccountsRefresh)
+	s.mux.HandleFunc("/api/accounts/refresh/start", s.handleAccountsRefreshStart)
+	s.mux.HandleFunc("/api/accounts/refresh/progress/", s.handleAccountsRefreshProgress)
 	s.mux.HandleFunc("/api/accounts/update", s.handleAccountsUpdate)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/storage/info", s.handleStorageInfo)

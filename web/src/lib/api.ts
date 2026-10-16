@@ -62,6 +62,16 @@ type AccountRefreshResponse = {
   errors: Array<{ access_token: string; error: string }>;
 };
 
+export type AccountRefreshProgress = {
+  progress_id: string;
+  total: number;
+  processed: number;
+  refreshed: number;
+  failed: number;
+  done: boolean;
+  errors: Array<{ account: string; error: string }>;
+};
+
 type AccountUpdateResponse = {
   item: Account;
   items: Account[];
@@ -388,6 +398,17 @@ export async function refreshAccounts(accessTokens: string[]) {
     method: "POST",
     body: { access_tokens: accessTokens },
   });
+}
+
+export async function startAccountRefresh(accessTokens: string[]) {
+  return httpRequest<{ progress_id: string; total: number }>("/api/accounts/refresh/start", {
+    method: "POST",
+    body: { access_tokens: accessTokens },
+  });
+}
+
+export async function fetchAccountRefreshProgress(progressId: string) {
+  return httpRequest<AccountRefreshProgress>(`/api/accounts/refresh/progress/${encodeURIComponent(progressId)}`);
 }
 
 export async function updateAccount(

@@ -396,6 +396,10 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 }
 
 func runAccountRefreshBatch(parent context.Context, accounts []Account, refresh func(context.Context, Account) error) []error {
+	return runAccountRefreshBatchReport(parent, accounts, refresh, nil)
+}
+
+func runAccountRefreshBatchReport(parent context.Context, accounts []Account, refresh func(context.Context, Account) error, report func(int, error)) []error {
 	results := make([]error, len(accounts))
 	if len(accounts) == 0 {
 		return results
@@ -409,11 +413,17 @@ func runAccountRefreshBatch(parent context.Context, accounts []Account, refresh 
 			for i := range jobs {
 				if err := parent.Err(); err != nil {
 					results[i] = err
+					if report != nil {
+						report(i, err)
+					}
 					continue
 				}
 				ctx, cancel := context.WithTimeout(parent, 45*time.Second)
 				results[i] = refresh(ctx, accounts[i])
 				cancel()
+				if report != nil {
+					report(i, results[i])
+				}
 			}
 		}()
 	}

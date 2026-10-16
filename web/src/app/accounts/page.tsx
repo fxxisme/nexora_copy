@@ -45,10 +45,12 @@ import {
 import {
   deleteAccounts,
   deleteAccountsWithOptions,
+  fetchAccountRefreshProgress,
   fetchAccounts,
-  refreshAccounts,
+  startAccountRefresh,
   updateAccount,
   type Account,
+  type AccountRefreshProgress,
   type AccountStatus,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -452,6 +454,8 @@ function AccountsPageContent() {
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [isLoading, setIsLoading] = useState(() => cachedAccounts === null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState<AccountRefreshProgress | null>(null);
+  const [activeRefreshId, setActiveRefreshId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
@@ -475,6 +479,61 @@ function AccountsPageContent() {
   useEffect(() => {
     window.localStorage.setItem("accounts.viewMode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    const savedId = window.sessionStorage.getItem("accounts.refreshProgressId");
+    if (savedId) {
+      setActiveRefreshId(savedId);
+      setIsRefreshing(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeRefreshId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const progress = await fetchAccountRefreshProgress(activeRefreshId);
+        if (stopped) return;
+        setRefreshProgress(progress);
+        if (progress.done) {
+          const data = await fetchAccounts();
+          if (stopped) return;
+          setAccounts(data.items);
+          setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
+          window.sessionStorage.removeItem("accounts.refreshProgressId");
+          setActiveRefreshId(null);
+          setIsRefreshing(false);
+          if (progress.failed > 0) {
+            toast.error(`刷新成功 ${progress.refreshed} 个，失败 ${progress.failed} 个`);
+          } else {
+            toast.success(`刷新成功 ${progress.refreshed} 个账户`);
+          }
+          return;
+        }
+        timer = setTimeout(() => void poll(), 1200);
+      } catch (error) {
+        if (stopped) return;
+        const message = error instanceof Error ? error.message : "查询刷新进度失败";
+        if (message === "progress not found") {
+          window.sessionStorage.removeItem("accounts.refreshProgressId");
+          setActiveRefreshId(null);
+          setIsRefreshing(false);
+          setRefreshProgress(null);
+          void loadAccounts(true);
+          toast.error("刷新任务已失效，请重新发起");
+          return;
+        }
+        timer = setTimeout(() => void poll(), 5000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeRefreshId]);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -602,22 +661,14 @@ function AccountsPageContent() {
     }
 
     setIsRefreshing(true);
+    setRefreshProgress(null);
     try {
-      const data = await refreshAccounts(accessTokens);
-      setAccounts(data.items);
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
-      if (data.errors.length > 0) {
-        const firstError = data.errors[0]?.error;
-        toast.error(
-          `刷新成功 ${data.refreshed} 个，失败 ${data.errors.length} 个${firstError ? `，首个错误：${firstError}` : ""}`,
-        );
-      } else {
-        toast.success(`刷新成功 ${data.refreshed} 个账户`);
-      }
+      const started = await startAccountRefresh(accessTokens);
+      window.sessionStorage.setItem("accounts.refreshProgressId", started.progress_id);
+      setActiveRefreshId(started.progress_id);
     } catch (error) {
       const message = error instanceof Error ? error.message : "刷新账户失败";
       toast.error(message);
-    } finally {
       setIsRefreshing(false);
     }
   };
@@ -722,6 +773,34 @@ function AccountsPageContent() {
           </Button>
         </div>
       </section>
+
+      {refreshProgress ? (
+        <section className="space-y-2 py-2" aria-live="polite">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="font-medium text-foreground">
+              {refreshProgress.done ? "账号刷新完成" : "正在刷新账号"}
+            </span>
+            <span className="font-data tabular-nums text-muted-foreground">
+              {refreshProgress.processed}/{refreshProgress.total} · 成功 {refreshProgress.refreshed} · 失败 {refreshProgress.failed}
+            </span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-stone-200" role="progressbar" aria-valuenow={refreshProgress.processed} aria-valuemin={0} aria-valuemax={refreshProgress.total}>
+            <div className="h-full bg-emerald-600 transition-all" style={{ width: `${refreshProgress.total ? (refreshProgress.processed / refreshProgress.total) * 100 : 0}%` }} />
+          </div>
+          {refreshProgress.errors.length > 0 ? (
+            <details className="text-sm text-rose-700">
+              <summary className="cursor-pointer">失败账号（{refreshProgress.failed}）</summary>
+              <ul className="mt-2 max-h-48 space-y-1 overflow-y-auto">
+                {refreshProgress.errors.map((item, index) => (
+                  <li key={`${item.account}-${index}`} className="break-words">
+                    {item.account}: {item.error}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </section>
+      ) : null}
 
       <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}>
         <DialogContent showCloseButton={false} className="rounded-2xl p-6">
