@@ -1113,12 +1113,14 @@ func (c *UpstreamClient) GetUserInfo(ctx context.Context) (Account, error) {
 	}
 	initPayload, initErr := c.getJSON(ctx, http.MethodPost, "/backend-api/conversation/init", map[string]string{"Content-Type": "application/json", "Accept": "application/json"}, map[string]any{"gizmo_id": nil, "requested_default_model": nil, "conversation_id": nil, "timezone_offset_min": -480})
 	accountPayload, accountErr := c.getJSON(ctx, http.MethodGet, "/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480", map[string]string{"Accept": "application/json", "X-OpenAI-Target-Path": "/backend-api/accounts/check/v4-2023-04-27", "X-OpenAI-Target-Route": "/backend-api/accounts/check/v4-2023-04-27"}, nil)
-	planType := "free"
+	planType := ""
 	if accountErr == nil {
 		if accounts, ok := accountPayload["accounts"].(map[string]any); ok {
 			if def, ok := accounts["default"].(map[string]any); ok {
 				if acct, ok := def["account"].(map[string]any); ok {
-					planType = normalizeAccountType(strAny(acct["plan_type"], planType))
+					if plan := strAny(acct["plan_type"], ""); plan != "" {
+						planType = normalizeAccountType(plan)
+					}
 				}
 			}
 		}

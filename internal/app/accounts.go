@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -350,6 +352,15 @@ func mergeRefreshedAccount(dst *Account, info Account) {
 	mergeAccount(dst, info)
 	if status == "异常" || status == "禁用" {
 		dst.Status = status
+	} else if status == "限流" {
+		if info.Status == "正常" && !info.ImageQuotaUnknown && info.Quota > 0 {
+			dst.Status = "正常"
+			dst.RestoreAt = nil
+			dst.RateLimitedAt = nil
+			dst.RateLimitResetAt = nil
+		} else {
+			dst.Status = "限流"
+		}
 	}
 }
 
@@ -360,64 +371,124 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 			want[strings.TrimSpace(t)] = true
 		}
 	}
-	accounts := s.store.LoadAccounts()
-	refreshed := 0
-	errs := []map[string]any{}
-	for _, a := range accounts {
+	selected := []Account{}
+	for _, a := range s.store.LoadAccounts() {
 		if len(want) > 0 && !want[a.AccessToken] {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(parent, 45*time.Second)
-		if ptrString(a.RefreshToken) != "" && (accessTokenNeedsRefresh(a.AccessToken) || isSignupAccessToken(a.AccessToken)) {
-			if refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken); refreshErr == nil {
-				a = refreshed
-			}
-		}
-		client, err := NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+		selected = append(selected, a)
+	}
+	if len(selected) == 0 {
+		return 0, []map[string]any{}
+	}
+	results := runAccountRefreshBatch(parent, selected, s.refreshAccountInfo)
+	refreshed := 0
+	errs := []map[string]any{}
+	for i, err := range results {
 		if err == nil {
-			var info Account
-			info, err = client.GetUserInfo(ctx)
-			if isInvalidTokenErrorText(err) && ptrString(a.RefreshToken) != "" {
-				if refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken); refreshErr == nil && refreshed.AccessToken != a.AccessToken {
-					a = refreshed
-					client, err = NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
-					if err == nil {
-						info, err = client.GetUserInfo(ctx)
-					}
-				}
-			}
-			if err == nil {
-				err = s.store.UpdateAccounts(func(current []Account) []Account {
-					for i := range current {
-						if current[i].AccessToken == a.AccessToken {
-							mergeRefreshedAccount(&current[i], info)
-							break
-						}
-					}
-					return current
-				})
-				if err == nil {
-					refreshed++
-				}
-			}
-		}
-		cancel()
-		if err != nil {
-			if isInvalidTokenErrorText(err) {
-				_ = s.store.UpdateAccounts(func(current []Account) []Account {
-					for i := range current {
-						if current[i].AccessToken == a.AccessToken {
-							applyAccountFailureState(&current[i], err, nowISO())
-							break
-						}
-					}
-					return current
-				})
-			}
-			errs = append(errs, map[string]any{"token": a.AccessToken, "error": err.Error()})
+			refreshed++
+		} else {
+			errs = append(errs, map[string]any{"token": selected[i].AccessToken, "error": err.Error()})
 		}
 	}
 	return refreshed, errs
+}
+
+func runAccountRefreshBatch(parent context.Context, accounts []Account, refresh func(context.Context, Account) error) []error {
+	results := make([]error, len(accounts))
+	if len(accounts) == 0 {
+		return results
+	}
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(len(accounts), 8) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				if err := parent.Err(); err != nil {
+					results[i] = err
+					continue
+				}
+				ctx, cancel := context.WithTimeout(parent, 45*time.Second)
+				results[i] = refresh(ctx, accounts[i])
+				cancel()
+			}
+		}()
+	}
+	for i := range accounts {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+	return results
+}
+
+func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
+	if ptrString(a.RefreshToken) != "" && (accessTokenNeedsRefresh(a.AccessToken) || isSignupAccessToken(a.AccessToken)) {
+		if refreshed, err := s.refreshOAuthAccount(ctx, a.AccessToken); err == nil {
+			a = refreshed
+		}
+	}
+	client, err := NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+	if err != nil {
+		return err
+	}
+	info, err := client.GetUserInfo(ctx)
+	if isInvalidTokenErrorText(err) && ptrString(a.RefreshToken) != "" {
+		if refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken); refreshErr == nil && refreshed.AccessToken != a.AccessToken {
+			a = refreshed
+			client, err = NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+			if err == nil {
+				info, err = client.GetUserInfo(ctx)
+			}
+		}
+	}
+	if err == nil {
+		return s.applyAccountInfoRefresh(a, info)
+	}
+	if isInvalidTokenErrorText(err) {
+		_ = s.store.UpdateAccounts(func(current []Account) []Account {
+			for i := range current {
+				if current[i].AccessToken == a.AccessToken {
+					applyAccountFailureState(&current[i], err, nowISO())
+					break
+				}
+			}
+			return current
+		})
+	}
+	return err
+}
+
+func (s *Server) applyAccountInfoRefresh(observed, info Account) error {
+	updated := false
+	stale := false
+	err := s.store.UpdateAccounts(func(current []Account) []Account {
+		for i := range current {
+			if current[i].AccessToken != observed.AccessToken {
+				continue
+			}
+			if current[i].Success != observed.Success || current[i].Fail != observed.Fail || current[i].Status != observed.Status {
+				stale = true
+				break
+			}
+			mergeRefreshedAccount(&current[i], info)
+			updated = true
+			break
+		}
+		return current
+	})
+	if err != nil {
+		return err
+	}
+	if stale {
+		return errors.New("account state changed during refresh")
+	}
+	if !updated {
+		return errors.New("account credentials changed during refresh")
+	}
+	return nil
 }
 
 func (s *Server) handleAccountsRefresh(w http.ResponseWriter, r *http.Request) {

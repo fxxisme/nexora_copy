@@ -15,19 +15,19 @@ func (s *Server) startLimitedAccountWatcher() {
 		for {
 			time.Sleep(interval)
 			accounts := s.store.LoadAccounts()
-			var limited []string
+			var limited []Account
 			for _, a := range accounts {
 				if a.Status == "限流" && a.AccessToken != "" {
-					limited = append(limited, a.AccessToken)
+					limited = append(limited, a)
 				}
 			}
 			if len(limited) == 0 {
 				continue
 			}
 			log.Printf("[account-limited-watcher] checking %d limited accounts", len(limited))
-			for _, token := range limited {
+			for _, observed := range limited {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				client, err := NewUpstreamClientForAccount(s.accountByToken(token), s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+				client, err := NewUpstreamClientForAccount(observed, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
 				if err != nil {
 					cancel()
 					continue
@@ -37,22 +37,26 @@ func (s *Server) startLimitedAccountWatcher() {
 				if err != nil {
 					continue
 				}
-				updated := s.store.LoadAccounts()
-				for i := range updated {
-					if updated[i].AccessToken == token {
-						mergeAccount(&updated[i], info)
-						updated[i].AccessToken = token
-						if info.Status == "正常" && (info.ImageQuotaUnknown || info.Quota > 0) {
-							updated[i].Status = "正常"
-							updated[i].RestoreAt = nil
-							updated[i].RateLimitedAt = nil
-							updated[i].RateLimitResetAt = nil
-						}
-						break
-					}
+				if err := s.applyLimitedAccountRefresh(observed, info); err != nil {
+					log.Printf("[account-limited-watcher] update failed: %v", err)
 				}
-				_ = s.store.SaveAccounts(updated)
 			}
 		}
 	}()
+}
+
+func (s *Server) applyLimitedAccountRefresh(observed, info Account) error {
+	return s.store.UpdateAccounts(func(current []Account) []Account {
+		for i := range current {
+			if current[i].AccessToken != observed.AccessToken || current[i].Status != "限流" {
+				continue
+			}
+			if current[i].Fail != observed.Fail || ptrString(current[i].RateLimitedAt) != ptrString(observed.RateLimitedAt) {
+				break
+			}
+			mergeRefreshedAccount(&current[i], info)
+			break
+		}
+		return current
+	})
 }

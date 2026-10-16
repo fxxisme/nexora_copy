@@ -21,7 +21,10 @@ func isRateLimitErrorText(err error) bool {
 		strings.Contains(text, "free plan limit") ||
 		strings.Contains(text, "limit for image generation") ||
 		strings.Contains(text, "image generations requests") ||
-		strings.Contains(text, "when the limit resets")
+		strings.Contains(text, "when the limit resets") ||
+		strings.Contains(text, "图像生成请求上限") ||
+		strings.Contains(text, "图片生成请求上限") ||
+		strings.Contains(text, "图像生成次数上限")
 }
 
 func isInvalidTokenErrorText(err error) bool {
@@ -101,6 +104,12 @@ func rateLimitRestoreDelay(err error) time.Duration {
 	if m := regexp.MustCompile(`(\d+)\s*minutes?`).FindStringSubmatch(text); len(m) > 1 {
 		minutes, _ = strconv.Atoi(m[1])
 	}
+	if m := regexp.MustCompile(`(\d+)\s*小时`).FindStringSubmatch(text); len(m) > 1 {
+		hours, _ = strconv.Atoi(m[1])
+	}
+	if m := regexp.MustCompile(`(\d+)\s*分钟`).FindStringSubmatch(text); len(m) > 1 {
+		minutes, _ = strconv.Atoi(m[1])
+	}
 	if hours > 0 || minutes > 0 {
 		return time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute
 	}
@@ -168,4 +177,19 @@ func (s *Server) markAccountFailure(token string, err error, image bool, model s
 		}
 		return accounts
 	})
+}
+
+func applyAccountFailureState(account *Account, err error, now string) {
+	account.Fail++
+	account.LastUsedAt = &now
+	if isRateLimitErrorText(err) {
+		account.Status = "限流"
+		reset := time.Now().UTC().Add(rateLimitRestoreDelay(err)).Format(time.RFC3339)
+		account.RestoreAt = &reset
+		account.RateLimitResetAt = &reset
+		account.RateLimitedAt = &now
+	} else if isInvalidTokenErrorText(err) {
+		account.Status = "异常"
+		account.Quota = 0
+	}
 }
