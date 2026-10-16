@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -15,6 +17,24 @@ import (
 const codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const webOAuthClientID = "app_2SKx67EdpoN0G6j64rFvigXD"
 const codexOAuthTokenURL = "https://auth.openai.com/oauth/token"
+
+type oauthRefreshError struct {
+	StatusCode int
+	Code       string
+	Terminal   bool
+}
+
+func (e *oauthRefreshError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("oauth refresh failed: status=%d code=%s", e.StatusCode, e.Code)
+	}
+	return fmt.Sprintf("oauth refresh failed: status=%d", e.StatusCode)
+}
+
+func terminalOAuthRefreshError(err error) bool {
+	var refreshErr *oauthRefreshError
+	return errors.As(err, &refreshErr) && refreshErr.Terminal
+}
 
 func (s *Server) refreshOAuthAccount(ctx context.Context, oldToken string) (Account, error) {
 	return s.refreshOAuthAccountAt(ctx, oldToken, codexOAuthTokenURL)
@@ -79,7 +99,17 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return Account{}, fmt.Errorf("oauth refresh failed: status=%d", resp.StatusCode)
+		var failure map[string]any
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&failure)
+		code := strings.TrimSpace(strAny(failure["error"], strAny(failure["code"], "")))
+		if nested, ok := failure["error"].(map[string]any); ok {
+			code = strings.TrimSpace(strAny(nested["code"], strAny(failure["code"], "")))
+		}
+		code = strings.ToLower(code)
+		description := strings.ToLower(strings.TrimSpace(strAny(failure["error_description"], strAny(failure["message"], ""))))
+		terminal := resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 &&
+			(code == "invalid_grant" || code == "invalid_refresh_token" || code == "refresh_token_invalidated" || strings.Contains(description, "session has ended"))
+		return Account{}, &oauthRefreshError{StatusCode: resp.StatusCode, Code: code, Terminal: terminal}
 	}
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -96,6 +126,7 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 	idToken := strings.TrimSpace(strAny(payload["id_token"], ""))
 	expiresIn := intAny(payload["expires_in"], 0)
 	updated := false
+	credentialsChanged := false
 	if err := s.store.UpdateAccounts(func(current []Account) []Account {
 		oldIndex := -1
 		newIndex := -1
@@ -107,6 +138,10 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 			}
 		}
 		if oldIndex < 0 {
+			return current
+		}
+		if ptrString(current[oldIndex].RefreshToken) != ptrString(account.RefreshToken) {
+			credentialsChanged = true
 			return current
 		}
 		account = current[oldIndex]
@@ -151,6 +186,9 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 		return current
 	}); err != nil {
 		return Account{}, err
+	}
+	if credentialsChanged {
+		return Account{}, errors.New("account refresh credentials changed during OAuth exchange")
 	}
 	if !updated {
 		return Account{}, fmt.Errorf("account was removed during token refresh")

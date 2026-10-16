@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,5 +87,81 @@ func TestOAuthRefreshPreservesImportedAccountSource(t *testing.T) {
 				t.Fatalf("existing account data lost during token rotation: %+v", stored[0])
 			}
 		})
+	}
+}
+
+func TestOAuthRefreshClassifiesTerminalAndTransientFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		terminal   bool
+	}{
+		{name: "revoked", status: 400, body: `{"error":"invalid_grant"}`, terminal: true},
+		{name: "nested code", status: 401, body: `{"error":{"code":"invalid_refresh_token"}}`, terminal: true},
+		{name: "top-level code", status: 400, body: `{"code":"REFRESH_TOKEN_INVALIDATED"}`, terminal: true},
+		{name: "throttled", status: 429, body: `{"error":"invalid_grant"}`},
+		{name: "upstream unavailable", status: 503, body: `{"error":"invalid_grant"}`},
+		{name: "client error", status: 401, body: `{"error":"invalid_client"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer endpoint.Close()
+			store := NewStore(t.TempDir())
+			refresh := "refresh-token"
+			if err := store.SaveAccounts([]Account{{AccessToken: "access-token", RefreshToken: &refresh, Status: "正常"}}); err != nil {
+				t.Fatal(err)
+			}
+			s := &Server{store: store}
+			_, err := s.refreshOAuthAccountAt(context.Background(), "access-token", endpoint.URL)
+			var refreshErr *oauthRefreshError
+			if !errors.As(err, &refreshErr) || terminalOAuthRefreshError(err) != tc.terminal {
+				t.Fatalf("oauth failure = %v, terminal want %t", err, tc.terminal)
+			}
+			if account := store.LoadAccounts()[0]; account.Status != "正常" || account.AccessToken != "access-token" {
+				t.Fatalf("oauth failure changed account: %+v", account)
+			}
+		})
+	}
+}
+
+func TestOAuthRefreshDoesNotOverwriteChangedRefreshToken(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-finish
+		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"stale-refresh"}`))
+	}))
+	defer endpoint.Close()
+	store := NewStore(t.TempDir())
+	refresh := "old-refresh"
+	if err := store.SaveAccounts([]Account{{AccessToken: "old-access", RefreshToken: &refresh, Status: "正常"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: store}
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.refreshOAuthAccountAt(context.Background(), "old-access", endpoint.URL)
+		result <- err
+	}()
+	<-started
+	if err := store.UpdateAccounts(func(accounts []Account) []Account {
+		next := "newer-refresh"
+		accounts[0].RefreshToken = &next
+		return accounts
+	}); err != nil {
+		close(finish)
+		t.Fatal(err)
+	}
+	close(finish)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "credentials changed") {
+		t.Fatalf("stale OAuth exchange = %v", err)
+	}
+	account := store.LoadAccounts()[0]
+	if account.AccessToken != "old-access" || ptrString(account.RefreshToken) != "newer-refresh" {
+		t.Fatalf("stale OAuth exchange overwrote credentials: %+v", account)
 	}
 }

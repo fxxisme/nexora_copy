@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -430,9 +431,12 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 		return err
 	}
 	defer release()
+	var preflightErr error
 	if ptrString(a.RefreshToken) != "" && (accessTokenNeedsRefresh(a.AccessToken) || isSignupAccessToken(a.AccessToken)) {
 		if refreshed, err := s.refreshOAuthAccount(ctx, a.AccessToken); err == nil {
 			a = refreshed
+		} else {
+			preflightErr = err
 		}
 	}
 	client, err := NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
@@ -441,11 +445,20 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 	}
 	info, err := client.GetUserInfo(ctx)
 	if isInvalidTokenErrorText(err) && ptrString(a.RefreshToken) != "" {
-		if refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken); refreshErr == nil && refreshed.AccessToken != a.AccessToken {
-			a = refreshed
-			client, err = NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
-			if err == nil {
-				info, err = client.GetUserInfo(ctx)
+		if preflightErr != nil && !terminalOAuthRefreshError(preflightErr) {
+			return fmt.Errorf("oauth refresh after account authentication failure: %w", preflightErr)
+		}
+		if preflightErr == nil {
+			refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken)
+			if refreshErr != nil && !terminalOAuthRefreshError(refreshErr) {
+				return fmt.Errorf("oauth refresh after account authentication failure: %w", refreshErr)
+			}
+			if refreshErr == nil {
+				a = refreshed
+				client, err = NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+				if err == nil {
+					info, err = client.GetUserInfo(ctx)
+				}
 			}
 		}
 	}
@@ -453,17 +466,21 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 		return s.applyAccountInfoRefresh(a, info)
 	}
 	if isInvalidTokenErrorText(err) {
-		_ = s.store.UpdateAccounts(func(current []Account) []Account {
-			for i := range current {
-				if current[i].AccessToken == a.AccessToken {
-					applyAccountFailureState(&current[i], err, nowISO())
-					break
-				}
-			}
-			return current
-		})
+		s.markAccountRefreshAuthFailure(a, err)
 	}
 	return err
+}
+
+func (s *Server) markAccountRefreshAuthFailure(observed Account, err error) {
+	_ = s.store.UpdateAccounts(func(current []Account) []Account {
+		for i := range current {
+			if current[i].AccessToken == observed.AccessToken && ptrString(current[i].RefreshToken) == ptrString(observed.RefreshToken) {
+				applyAccountFailureState(&current[i], err, nowISO())
+				break
+			}
+		}
+		return current
+	})
 }
 
 func (s *Server) acquireAccountRefreshSlot(ctx context.Context) (func(), error) {

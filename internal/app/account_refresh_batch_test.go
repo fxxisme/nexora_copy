@@ -128,6 +128,28 @@ func TestAccountInfoRefreshDoesNotOverwriteNewerUsage(t *testing.T) {
 	}
 }
 
+func TestAccountRefreshAuthFailureRequiresSameCredentials(t *testing.T) {
+	store := NewStore(t.TempDir())
+	refresh := "old-refresh"
+	observed := Account{AccessToken: "access-token", RefreshToken: &refresh, Status: "正常", Quota: 5}
+	if err := store.SaveAccounts([]Account{observed}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: store}
+	if err := store.UpdateAccounts(func(accounts []Account) []Account {
+		next := "new-refresh"
+		accounts[0].RefreshToken = &next
+		return accounts
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.markAccountRefreshAuthFailure(observed, errors.New("GET /backend-api/me failed: status=401"))
+	account := store.LoadAccounts()[0]
+	if account.Status != "正常" || account.Fail != 0 || account.Quota != 5 {
+		t.Fatalf("stale 401 invalidated refreshed account: %+v", account)
+	}
+}
+
 func TestUnknownQuotaDoesNotReleaseLimitedAccount(t *testing.T) {
 	limitedAt := "2026-10-16T00:00:00Z"
 	account := Account{AccessToken: "token", Type: "Plus", Status: "限流", RateLimitedAt: &limitedAt}
