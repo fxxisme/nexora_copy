@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -297,8 +298,14 @@ func TestImageConversationPrepareAndSendStates(t *testing.T) {
 				message, _ := messages[0].(map[string]any)
 				content, _ := message["content"].(map[string]any)
 				parts, _ := content["parts"].([]any)
-				if len(parts) != 1 || parts[0] != "@创建图像 test prompt" {
+				if len(parts) != 1 || parts[0] != "test prompt" {
 					t.Errorf("send content = %#v", content)
+				}
+				metadata, _ := message["metadata"].(map[string]any)
+				serialization, _ := metadata["serialization_metadata"].(map[string]any)
+				offsets, _ := serialization["custom_symbol_offsets"].([]any)
+				if len(offsets) != 0 {
+					t.Errorf("send custom symbol offsets = %#v, want none", offsets)
 				}
 				if req.Header.Get("X-Conduit-Token") != "conduit-token" {
 					t.Error("send missing conduit token")
@@ -346,6 +353,232 @@ func TestImageIDsAfterSSEPollsTextOnlyTurn(t *testing.T) {
 	_, _, err = client.imageIDsAfterSSE(context.Background(), "conversation-1", "You've hit your free plan limit for image generation", state, nil, nil, imageGenerationOptions{Timeout: time.Second})
 	if err == nil || requests != 1 {
 		t.Fatalf("quota message should not poll: requests=%d err=%v", requests, err)
+	}
+	state.ToolInvoked = true
+	state.TurnUseCase = "image gen"
+	_, _, err = client.imageIDsAfterSSE(context.Background(), "conversation-1", "你已达到 Free 套餐的图像生成请求上限。", state, nil, nil, imageGenerationOptions{Timeout: time.Second})
+	if err != nil || requests != 1 {
+		t.Fatalf("Chinese quota message should not poll: requests=%d err=%v", requests, err)
+	}
+}
+
+func TestImagePollStopsOnCurrentTurnQuota(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return upstreamTestResponse(200, `{"current_node":"assistant-current","mapping":{"user-current":{"message":{"author":{"role":"user"}}},"assistant-current":{"parent":"user-current","message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["你已达到 Free 套餐的图像生成请求上限。"]}}},"assistant-old":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["old result"]}}}}}`), nil
+	})}
+	_, _, err := client.pollImageIDsWithError(context.Background(), "conversation-1", time.Second, time.Millisecond, 0)
+	if requests != 1 || err == nil || !strings.Contains(err.Error(), "图像生成请求上限") {
+		t.Fatalf("poll requests=%d err=%v, want current turn quota", requests, err)
+	}
+}
+
+func TestImagePollIgnoresPreviousTurnQuota(t *testing.T) {
+	conv := map[string]any{
+		"current_node": "assistant-current",
+		"mapping": map[string]any{
+			"assistant-current": map[string]any{"parent": "user-current", "message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"正在生成图片"}}}},
+			"user-current":      map[string]any{"parent": "assistant-old", "message": map[string]any{"author": map[string]any{"role": "user"}}},
+			"assistant-old":     map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"你已达到 Free 套餐的图像生成请求上限。"}}}},
+		},
+	}
+	if got := imagePollQuotaMessage(conv); got != "" {
+		t.Fatalf("previous turn quota = %q, want none", got)
+	}
+}
+
+func TestImagePollRetriesTemporaryStatuses(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch requests {
+		case 1:
+			return upstreamTestResponse(404, "not committed"), nil
+		case 2:
+			return upstreamTestResponseWithHeader(429, "busy", http.Header{"Retry-After": []string{"0"}}), nil
+		case 3:
+			return upstreamTestResponse(503, "unavailable"), nil
+		default:
+			return upstreamTestResponse(200, `{"mapping":{"image":{"message":{"author":{"role":"tool"},"metadata":{"async_task_type":"image_gen"},"content":{"content_type":"multimodal_text","parts":[{"asset_pointer":"file-service://file_generated"}]}}}}}`), nil
+		}
+	})}
+	files, _, err := client.pollImageIDsWithError(context.Background(), "conversation-1", time.Second, time.Millisecond, 0)
+	if requests != 4 || len(files) != 1 || files[0] != "file_generated" || err != nil {
+		t.Fatalf("poll requests=%d files=%v err=%v, want 4 requests and generated file", requests, files, err)
+	}
+}
+
+func TestImagePollStopsOnPermanentStatus(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return upstreamTestResponse(401, "unauthorized"), nil
+	})}
+	files, sediments, err := client.pollImageIDsWithError(context.Background(), "conversation-1", time.Second, time.Millisecond, 0)
+	if requests != 1 || len(files) != 0 || len(sediments) != 0 || !isInvalidTokenErrorText(err) {
+		t.Fatalf("poll requests=%d files=%v sediments=%v err=%v, want one authentication failure", requests, files, sediments, err)
+	}
+}
+
+func TestImagePollHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("canceled poll should not send a request")
+		return nil, nil
+	})}
+	_, _, err := client.pollImageIDsWithError(ctx, "conversation-1", time.Second, time.Millisecond, time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled poll error = %v", err)
+	}
+}
+
+func TestImagePollRetryAfter(t *testing.T) {
+	now := time.Date(2026, time.October, 16, 0, 0, 0, 0, time.UTC)
+	if got := retryAfterDuration("3", now); got != 3*time.Second {
+		t.Fatalf("delta Retry-After = %s", got)
+	}
+	if got := retryAfterDuration(now.Add(5*time.Second).Format(stdhttp.TimeFormat), now); got != 5*time.Second {
+		t.Fatalf("date Retry-After = %s", got)
+	}
+	if got := retryAfterDuration("invalid", now); got != 0 {
+		t.Fatalf("invalid Retry-After = %s", got)
+	}
+	err := &upstreamStatusError{StatusCode: 429, RetryAfter: 5 * time.Second}
+	if got := imagePollRetryDelay(time.Second, 2, err); got != 5*time.Second {
+		t.Fatalf("retry delay = %s, want 5s", got)
+	}
+	var statusErr *upstreamStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 429 {
+		t.Fatalf("typed status error = %v", err)
+	}
+}
+
+func TestImageDownloadRetriesTemporaryStatuses(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{userAgent: "test-agent", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch requests {
+		case 1:
+			return upstreamTestResponse(503, "busy"), nil
+		case 2:
+			return upstreamTestResponseWithHeader(429, "busy", http.Header{"Retry-After": []string{"0"}}), nil
+		default:
+			return upstreamTestResponse(200, "image bytes"), nil
+		}
+	})}
+	data, err := client.download(context.Background(), "https://storage.example/image.png")
+	if err != nil || string(data) != "image bytes" || requests != 3 {
+		t.Fatalf("download requests=%d data=%q err=%v", requests, data, err)
+	}
+}
+
+func TestImageDownloadStopsOnPermanentStatus(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{userAgent: "test-agent", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return upstreamTestResponse(403, "forbidden"), nil
+	})}
+	_, err := client.download(context.Background(), "https://storage.example/image.png")
+	if err == nil || requests != 1 {
+		t.Fatalf("download requests=%d err=%v, want one forbidden response", requests, err)
+	}
+}
+
+func TestImageDownloadStopsOnCancellation(t *testing.T) {
+	requests := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		cancel()
+		return nil, req.Context().Err()
+	})}
+	_, err := client.download(ctx, "https://storage.example/image.png")
+	if !errors.Is(err, context.Canceled) || requests != 1 {
+		t.Fatalf("download requests=%d err=%v, want one canceled request", requests, err)
+	}
+}
+
+func TestImageDownloadStopsOnLongRetryAfter(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return upstreamTestResponseWithHeader(429, "busy", http.Header{"Retry-After": []string{"3600"}}), nil
+	})}
+	_, err := client.download(context.Background(), "https://storage.example/image.png")
+	if err == nil || requests != 1 {
+		t.Fatalf("download requests=%d err=%v, want one rate-limited request", requests, err)
+	}
+}
+
+func TestImageDownloadURLRetriesNotReady(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return upstreamTestResponse(404, `{"error":{"code":"file_not_ready"}}`), nil
+		}
+		return upstreamTestResponse(200, `{"download_url":"https://storage.example/image.png"}`), nil
+	})}
+	urls, err := client.resolveImageURLs(context.Background(), "conversation-1", []string{"file-generated"}, nil)
+	if err != nil || requests != 2 || len(urls) != 1 || urls[0] != "https://storage.example/image.png" {
+		t.Fatalf("resolve requests=%d urls=%v err=%v", requests, urls, err)
+	}
+}
+
+func TestImageDownloadURLReturnsPermanentError(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return upstreamTestResponse(401, "unauthorized"), nil
+	})}
+	urls, err := client.resolveImageURLs(context.Background(), "conversation-1", []string{"file-generated"}, nil)
+	if requests != 1 || len(urls) != 0 || !isInvalidTokenErrorText(err) {
+		t.Fatalf("resolve requests=%d urls=%v err=%v, want authentication error", requests, urls, err)
+	}
+}
+
+func TestImageDownloadURLIncludesFileAndSediment(t *testing.T) {
+	client := &UpstreamClient{client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/backend-api/files/file-generated/download":
+			return upstreamTestResponse(200, `{"download_url":"https://storage.example/file.png"}`), nil
+		case "/backend-api/conversation/conversation-1/attachment/sediment-generated/download":
+			return upstreamTestResponse(200, `{"download_url":"https://storage.example/sediment.png"}`), nil
+		default:
+			t.Fatalf("unexpected download URL path %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+	urls, err := client.resolveImageURLs(context.Background(), "conversation-1", []string{"file-generated"}, []string{"sediment-generated"})
+	if err != nil || len(urls) != 2 {
+		t.Fatalf("resolved URLs=%v err=%v, want both sources", urls, err)
+	}
+}
+
+func TestImageDownloadCredentialScopeAndEmptyResponse(t *testing.T) {
+	requests := 0
+	client := &UpstreamClient{token: "account-token", userAgent: "test-agent", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Host == "chatgpt.com" {
+			if req.Header.Get("Authorization") != "Bearer account-token" {
+				t.Errorf("same-origin image download missing account authorization")
+			}
+		} else if req.Header.Get("Authorization") != "" || req.Header.Get("Referer") != "" {
+			t.Errorf("signed asset request sent account headers to %s", req.URL.Host)
+		}
+		if requests == 2 {
+			return upstreamTestResponse(200, ""), nil
+		}
+		return upstreamTestResponse(200, "image bytes"), nil
+	})}
+	if _, err := client.downloadOnce(context.Background(), "https://chatgpt.com/image.png"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := client.download(context.Background(), "https://storage.example/image.png")
+	if err != nil || string(data) != "image bytes" || requests != 3 {
+		t.Fatalf("signed download requests=%d data=%q err=%v", requests, data, err)
 	}
 }
 

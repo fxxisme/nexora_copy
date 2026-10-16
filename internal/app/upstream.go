@@ -17,10 +17,12 @@ import (
 	"math/rand"
 	"mime"
 	stdhttp "net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -33,7 +35,6 @@ const defaultClientVersion = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 const defaultClientBuild = "5955942"
 const defaultPowScript = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 const bootstrapMaxAttempts = 3
-const imageCreationMention = "@创建图像"
 const clientCreatedRoot = "client-created-root"
 
 type UpstreamClient struct {
@@ -63,6 +64,32 @@ type chatRequirements struct{ Token, ProofToken, TurnstileToken, SOToken string 
 type upstreamImageResult struct {
 	Bytes         []byte
 	RevisedPrompt string
+}
+
+type upstreamStatusError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       string
+	RetryAfter time.Duration
+}
+
+func (e *upstreamStatusError) Error() string {
+	return fmt.Sprintf("%s %s failed: status=%d body=%s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
+func retryAfterDuration(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		return time.Duration(min(max(0, seconds), 86400)) * time.Second
+	}
+	if date, err := stdhttp.ParseTime(value); err == nil {
+		return max(0, date.Sub(now))
+	}
+	return 0
 }
 
 type imageGenerationOptions struct {
@@ -232,7 +259,7 @@ func (c *UpstreamClient) do(ctx context.Context, method, path string, headers ma
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		traceLogf(ctx, "│  └─ upstream response status=%d duration=%s error_body=%s", resp.StatusCode, traceHTTPDuration(start), truncateText(string(b), 800))
-		return nil, fmt.Errorf("%s %s failed: status=%d body=%s", method, path, resp.StatusCode, string(b))
+		return nil, &upstreamStatusError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: string(b), RetryAfter: retryAfterDuration(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	traceLogf(ctx, "│  └─ upstream response status=%d duration=%s", resp.StatusCode, traceHTTPDuration(start))
 	if !stream {
@@ -645,7 +672,10 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 func (c *UpstreamClient) imageIDsAfterSSE(ctx context.Context, cid, message string, state *upstreamConversationState, fileIDs, sedimentIDs []string, opts imageGenerationOptions) ([]string, []string, error) {
 	if cid != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 && !state.Blocked && !isImageQuotaMessage(message) {
 		traceLogf(ctx, "│  ├─ step poll final image tool records conversation=%s timeout=%s interval=%s", maskedValue(cid), opts.Timeout, opts.PollInterval)
-		f, s := c.pollImageIDs(ctx, cid, opts.Timeout, opts.PollInterval, opts.PollInitialWait)
+		f, s, err := c.pollImageIDsWithError(ctx, cid, opts.Timeout, opts.PollInterval, opts.PollInitialWait)
+		if err != nil {
+			return nil, nil, err
+		}
 		fileIDs = append(fileIDs, f...)
 		sedimentIDs = append(sedimentIDs, s...)
 	}
@@ -676,19 +706,18 @@ func (c *UpstreamClient) prepareImage(ctx context.Context, prompt, model string,
 func (c *UpstreamClient) startImage(ctx context.Context, prompt, model string, cr chatRequirements, conduit string, refs []map[string]any) (*http.Response, error) {
 	path := "/backend-api/f/conversation"
 	timezone, timezoneOffset, _ := c.timezoneInfo()
-	imagePrompt := imageCreationMention + " " + prompt
 	parts := []any{}
 	attachments := []map[string]any{}
 	for _, r := range refs {
 		parts = append(parts, map[string]any{"content_type": "image_asset_pointer", "asset_pointer": "file-service://" + strAny(r["file_id"], ""), "width": r["width"], "height": r["height"], "size_bytes": r["file_size"]})
 		attachments = append(attachments, map[string]any{"id": r["file_id"], "mimeType": r["mime_type"], "name": r["file_name"], "size": r["file_size"], "width": r["width"], "height": r["height"]})
 	}
-	parts = append(parts, imagePrompt)
-	content := map[string]any{"content_type": "text", "parts": []string{imagePrompt}}
+	parts = append(parts, prompt)
+	content := map[string]any{"content_type": "text", "parts": []string{prompt}}
 	if len(refs) > 0 {
 		content = map[string]any{"content_type": "multimodal_text", "parts": parts}
 	}
-	metadata := map[string]any{"developer_mode_connector_ids": []any{}, "selected_github_repos": []any{}, "selected_all_github_repos": false, "system_hints": []string{"picture_v2"}, "serialization_metadata": map[string]any{"render_format": "markdown", "custom_symbol_offsets": []any{map[string]any{"id": "picture_v2", "symbol": "ecosystemMention", "startIndex": 0, "endIndex": utf8.RuneCountInString(imageCreationMention)}}}}
+	metadata := map[string]any{"developer_mode_connector_ids": []any{}, "selected_github_repos": []any{}, "selected_all_github_repos": false, "system_hints": []string{"picture_v2"}, "serialization_metadata": map[string]any{"render_format": "markdown", "custom_symbol_offsets": []any{}}}
 	if len(attachments) > 0 {
 		metadata["attachments"] = attachments
 	}
@@ -763,6 +792,11 @@ func (c *UpstreamClient) uploadImage(ctx context.Context, data []byte, name stri
 	return map[string]any{"file_id": fileID, "file_name": name, "file_size": len(data), "mime_type": mimeType, "width": cfg.Width, "height": cfg.Height}, nil
 }
 func (c *UpstreamClient) pollImageIDs(ctx context.Context, cid string, timeout, interval, initialWait time.Duration) ([]string, []string) {
+	files, sediments, _ := c.pollImageIDsWithError(ctx, cid, timeout, interval, initialWait)
+	return files, sediments
+}
+
+func (c *UpstreamClient) pollImageIDsWithError(ctx context.Context, cid string, timeout, interval, initialWait time.Duration) ([]string, []string, error) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
@@ -770,47 +804,80 @@ func (c *UpstreamClient) pollImageIDs(ctx context.Context, cid string, timeout, 
 		interval = 4 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
+	pollCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	if initialWait > 0 {
+		initialWait = min(initialWait, time.Until(deadline))
 		traceLogf(ctx, "│  │  image poll initial wait %s", initialWait)
 		select {
-		case <-ctx.Done():
-			return nil, nil
+		case <-pollCtx.Done():
+			return nil, nil, ctx.Err()
 		case <-time.After(initialWait):
 		}
 	}
-	backoff := interval
+	consecutiveErrors := 0
 	for time.Now().Before(deadline) {
-		conv, err := c.getConversation(ctx, cid)
+		conv, err := c.getConversation(pollCtx, cid)
+		wait := interval
 		if err == nil {
-			backoff = interval
+			consecutiveErrors = 0
 			f, s := extractToolIDs(conv)
 			traceLogf(ctx, "│  │  image poll extracted file_ids=%d sediment_ids=%d", len(f), len(s))
 			if len(f) > 0 || len(s) > 0 {
-				return f, s
+				return f, s, nil
+			}
+			if quotaMessage := imagePollQuotaMessage(conv); quotaMessage != "" {
+				return nil, nil, errors.New(cleanImageMessage(quotaMessage))
 			}
 		} else {
 			traceLogf(ctx, "│  │  image poll conversation failed: %v", err)
-			if isTemporaryUpstreamErrorText(err) && backoff < interval*3 {
-				backoff += interval
+			var statusErr *upstreamStatusError
+			if errors.As(err, &statusErr) && statusErr.StatusCode != 404 && statusErr.StatusCode != 429 && (statusErr.StatusCode < 500 || statusErr.StatusCode > 599) {
+				return nil, nil, err
+			}
+			consecutiveErrors++
+			wait = imagePollRetryDelay(interval, consecutiveErrors, err)
+			jitterMax := min(wait/10, 500*time.Millisecond)
+			if jitterMax > 0 {
+				wait += time.Duration(rand.Int63n(int64(jitterMax)))
+			}
+			traceLogf(ctx, "│  │  image poll retry after %s", wait)
+			if pollCtx.Err() != nil {
+				return nil, nil, ctx.Err()
 			}
 		}
 		remaining := time.Until(deadline)
-		sleep := backoff
-		if remaining < sleep {
-			sleep = remaining
+		if remaining < wait {
+			wait = remaining
 		}
-		if sleep <= 0 {
+		if wait <= 0 {
 			break
 		}
 		select {
-		case <-ctx.Done():
-			return nil, nil
-		case <-time.After(sleep):
+		case <-pollCtx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(wait):
 		}
 	}
 	traceLogf(ctx, "│  └─ image poll timed out conversation=%s timeout=%s", maskedValue(cid), timeout)
-	return nil, nil
+	return nil, nil, nil
 }
+
+func imagePollRetryDelay(interval time.Duration, failures int, err error) time.Duration {
+	if interval <= 0 {
+		interval = 4 * time.Second
+	}
+	delay := interval
+	for i := 1; i < failures && delay < 16*time.Second; i++ {
+		delay = min(delay*2, 16*time.Second)
+	}
+	var statusErr *upstreamStatusError
+	if errors.As(err, &statusErr) {
+		delay = max(delay, statusErr.RetryAfter)
+	}
+	return delay
+}
+
 func (c *UpstreamClient) getConversation(ctx context.Context, cid string) (map[string]any, error) {
 	path := "/backend-api/conversation/" + cid
 	resp, err := c.do(ctx, http.MethodGet, path, map[string]string{"Accept": "application/json"}, nil, false)
@@ -825,69 +892,161 @@ func (c *UpstreamClient) getConversation(ctx context.Context, cid string) (map[s
 func (c *UpstreamClient) resolveImageURLs(ctx context.Context, cid string, fileIDs, sedimentIDs []string) ([]string, error) {
 	urls := []string{}
 	seen := map[string]bool{}
+	var firstErr error
 	for _, id := range unique(fileIDs) {
 		if id == "" || id == "file_upload" {
 			continue
 		}
 		path := "/backend-api/files/" + id + "/download"
-		resp, err := c.do(ctx, http.MethodGet, path, map[string]string{"Accept": "application/json"}, nil, false)
+		u, err := c.imageDownloadURL(ctx, path)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-		var data map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&data)
-		resp.Body.Close()
-		u := strAny(data["download_url"], strAny(data["url"], ""))
 		if u != "" && !seen[u] {
 			seen[u] = true
 			urls = append(urls, u)
 		}
 	}
-	if len(urls) > 0 || cid == "" {
-		return urls, nil
+	if cid != "" {
+		for _, id := range unique(sedimentIDs) {
+			path := "/backend-api/conversation/" + cid + "/attachment/" + id + "/download"
+			u, err := c.imageDownloadURL(ctx, path)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if u != "" && !seen[u] {
+				seen[u] = true
+				urls = append(urls, u)
+			}
+		}
 	}
-	for _, id := range unique(sedimentIDs) {
-		path := "/backend-api/conversation/" + cid + "/attachment/" + id + "/download"
-		resp, err := c.do(ctx, http.MethodGet, path, map[string]string{"Accept": "application/json"}, nil, false)
-		if err != nil {
-			continue
-		}
-		var data map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&data)
-		resp.Body.Close()
-		u := strAny(data["download_url"], strAny(data["url"], ""))
-		if u != "" && !seen[u] {
-			seen[u] = true
-			urls = append(urls, u)
-		}
+	if len(urls) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
 	return urls, nil
 }
+
+func (c *UpstreamClient) imageDownloadURL(ctx context.Context, path string) (string, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := c.do(ctx, http.MethodGet, path, map[string]string{"Accept": "application/json"}, nil, false)
+		if err == nil {
+			var data map[string]any
+			err = json.NewDecoder(resp.Body).Decode(&data)
+			resp.Body.Close()
+			if err == nil {
+				if u := strings.TrimSpace(strAny(data["download_url"], strAny(data["url"], ""))); u != "" {
+					return u, nil
+				}
+				err = fmt.Errorf("%s returned no download URL", path)
+			}
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		var statusErr *upstreamStatusError
+		if attempt == 1 || (errors.As(err, &statusErr) && statusErr.StatusCode != 404 && statusErr.StatusCode != 429 && (statusErr.StatusCode < 500 || statusErr.StatusCode > 599)) {
+			return "", err
+		}
+		traceLogf(ctx, "│  │  image download URL retry path=%s error=%v", path, err)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return "", errors.New("image download URL unavailable")
+}
+
+type imageDownloadStatusError struct {
+	StatusCode int
+	Body       string
+	RetryAfter time.Duration
+}
+
+func (e *imageDownloadStatusError) Error() string {
+	return fmt.Sprintf("download failed: status=%d body=%.100s", e.StatusCode, e.Body)
+}
+
 func (c *UpstreamClient) download(ctx context.Context, u string) ([]byte, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		data, err := c.downloadOnce(ctx, u)
+		if err == nil {
+			return data, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var statusErr *imageDownloadStatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode != 429 && (statusErr.StatusCode < 500 || statusErr.StatusCode > 599) {
+			return nil, err
+		}
+		if attempt == 2 {
+			return nil, err
+		}
+		wait := time.Duration(1<<attempt) * time.Second
+		if statusErr != nil {
+			if statusErr.RetryAfter > 30*time.Second {
+				return nil, err
+			}
+			wait = max(wait, statusErr.RetryAfter)
+		}
+		traceLogf(ctx, "│  │  image download retry attempt=%d wait=%s", attempt+2, wait)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil, errors.New("image download failed")
+}
+
+func (c *UpstreamClient) downloadOnce(ctx context.Context, u string) ([]byte, error) {
 	traceLogf(ctx, "│  ├─ download request %s", safeURLForLog(u))
 	start := time.Now()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Referer", chatGPTBaseURL+"/")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	parsedURL, err := url.Parse(u)
+	if err != nil {
+		return nil, err
 	}
-	req.Header[http.HeaderOrderKey] = []string{"user-agent", "accept", "accept-language", "referer", "authorization"}
+	if !parsedURL.IsAbs() {
+		base, _ := url.Parse(chatGPTBaseURL)
+		parsedURL = base.ResolveReference(parsedURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if parsedURL.Scheme == "https" && strings.EqualFold(parsedURL.Host, "chatgpt.com") {
+		req.Header.Set("User-Agent", c.userAgent)
+		req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+		req.Header.Set("Referer", chatGPTBaseURL+"/")
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		req.Header[http.HeaderOrderKey] = []string{"user-agent", "accept", "accept-language", "referer", "authorization"}
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		traceLogf(ctx, "│  └─ download failed duration=%s error=%v", traceHTTPDuration(start), err)
-		return nil, fmt.Errorf("download failed: %v (url: %.100s)", err, u)
+		return nil, fmt.Errorf("download failed: %w (url: %.100s)", err, u)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		traceLogf(ctx, "│  └─ download response status=%d duration=%s body=%s", resp.StatusCode, traceHTTPDuration(start), truncateText(string(b), 200))
-		return nil, fmt.Errorf("download failed: status=%d body=%.100s", resp.StatusCode, string(b))
+		return nil, &imageDownloadStatusError{StatusCode: resp.StatusCode, Body: string(b), RetryAfter: retryAfterDuration(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	data, err := io.ReadAll(resp.Body)
 	traceLogf(ctx, "│  └─ download ok status=%d bytes=%d duration=%s", resp.StatusCode, len(data), traceHTTPDuration(start))
+	if err == nil && len(data) == 0 {
+		return nil, errors.New("download failed: empty response")
+	}
 	return data, err
 }
 func (c *UpstreamClient) DeleteConversation(ctx context.Context, cid string) {
@@ -1591,7 +1750,39 @@ func isImageQuotaMessage(s string) bool {
 		strings.Contains(text, "limit for image generation") ||
 		strings.Contains(text, "image generations requests") ||
 		strings.Contains(text, "when the limit resets") ||
-		strings.Contains(text, "usage limit")
+		strings.Contains(text, "usage limit") ||
+		strings.Contains(text, "图像生成请求上限") ||
+		strings.Contains(text, "图像生成次数上限") ||
+		strings.Contains(text, "图片生成次数上限")
+}
+
+func imagePollQuotaMessage(conv map[string]any) string {
+	mapping, _ := conv["mapping"].(map[string]any)
+	nodeID := strAny(conv["current_node"], "")
+	visited := map[string]bool{}
+	for nodeID != "" && !visited[nodeID] {
+		visited[nodeID] = true
+		node, _ := mapping[nodeID].(map[string]any)
+		message, _ := node["message"].(map[string]any)
+		author, _ := message["author"].(map[string]any)
+		role := strAny(author["role"], "")
+		if role == "user" {
+			break
+		}
+		if role == "assistant" {
+			content, _ := message["content"].(map[string]any)
+			parts, _ := content["parts"].([]any)
+			var text strings.Builder
+			for _, part := range parts {
+				text.WriteString(strAny(part, ""))
+			}
+			if isImageQuotaMessage(text.String()) {
+				return text.String()
+			}
+		}
+		nodeID = strAny(node["parent"], "")
+	}
+	return ""
 }
 
 func cleanImageMessage(s string) string {
