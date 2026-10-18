@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    container_name: chatgpt2api-go
+    container_name: nexora
     restart: unless-stopped
     ports:
       - "3000:80"

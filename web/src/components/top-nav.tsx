@@ -101,8 +101,8 @@ export function TopNav() {
         collapsed && "lg:w-[72px]",
       )}>
         <div className="flex h-16 shrink-0 items-center gap-2 px-5">
-          <a href="https://github.com/RemotePinee/ChatGPT2API" target="_blank" rel="noreferrer" aria-label="GitHub 仓库" className="shrink-0 text-foreground"><Github className="size-6" /></a>
-          <span className={cn("truncate text-[16px] font-semibold text-foreground", collapsed && "lg:hidden")}>ChatGPT2API</span>
+          <a href="https://github.com/zoreAI/nexora" target="_blank" rel="noreferrer" aria-label="GitHub 仓库" className="shrink-0 text-foreground"><Github className="size-6" /></a>
+          <span className={cn("truncate text-[16px] font-semibold text-foreground", collapsed && "lg:hidden")}>Nexora</span>
           <button type="button" className="ml-auto grid size-8 place-items-center rounded-md text-muted-foreground lg:hidden" aria-label="关闭导航" onClick={() => setMobileOpen(false)}><X className="size-5" /></button>
         </div>
         <nav aria-label="主导航" className="min-h-0 flex-1 overflow-y-auto px-3 py-5">

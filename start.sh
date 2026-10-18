@@ -2,7 +2,7 @@
 set -e
 
 # =============================================================
-# ChatGPT2API-Go  启动脚本
+# Nexora 启动脚本
 # =============================================================
 # 用法:
 #   ./start.sh              启动（自动构建+运行）
@@ -45,7 +45,7 @@ if $SHOW_HELP; then
 fi
 
 # ---------- 构建 Go ----------
-BIN="$SCRIPT_DIR/bin/chatgpt2api-go"
+BIN="$SCRIPT_DIR/bin/nexora"
 if [ ! -x "$BIN" ] || $FORCE_BUILD; then
     echo ">>> 构建 Go 后端..."
     mkdir -p bin

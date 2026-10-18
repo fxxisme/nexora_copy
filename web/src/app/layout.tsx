@@ -19,8 +19,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ChatGPT 号池管理",
-  description: "ChatGPT account pool management dashboard",
+  title: "Nexora",
+  description: "Nexora account and API management",
 };
 
 export const viewport: Viewport = {

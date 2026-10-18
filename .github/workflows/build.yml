@@ -124,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          app_name="chatgpt2api-go"
+          app_name="nexora"
           package_name="${app_name}-${TARGET}"
           package_dir="dist/${package_name}"
           binary_name="${app_name}${BINARY_EXT}"

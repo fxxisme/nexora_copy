@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"chatgpt2api-go/internal/app"
+	"github.com/zoreAI/nexora/internal/app"
 )
 
 func main() {
@@ -49,7 +49,7 @@ func run() error {
 			log.Printf("server shutdown: %v", err)
 		}
 	}()
-	log.Printf("chatgpt2api-go listening on %s", addr)
+	log.Printf("Nexora listening on %s", addr)
 	err = server.ListenAndServe()
 	if !errors.Is(err, http.ErrServerClosed) {
 		stop()

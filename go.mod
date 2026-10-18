@@ -1,4 +1,4 @@
-module chatgpt2api-go
+module github.com/zoreAI/nexora
 
 go 1.26.0
 

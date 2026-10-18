@@ -59,8 +59,8 @@ make run
 ## Docker
 
 ```bash
-docker build -t chatgpt2api-go .
-docker run --rm -p 3000:80 -v "$PWD/data:/app/data" -e CHATGPT2API_AUTH_KEY=chatgpt2api chatgpt2api-go
+docker build -t nexora .
+docker run --rm -p 3000:80 -v "$PWD/data:/app/data" -e CHATGPT2API_AUTH_KEY=chatgpt2api nexora
 ```
 
 ## 数据库存储

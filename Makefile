@@ -1,7 +1,7 @@
 .PHONY: build run test web package package-web docker
 
 build:
-	go build -o bin/chatgpt2api ./cmd/server
+	go build -o bin/nexora ./cmd/server
 
 run:
 	CHATGPT2API_ADDR=:3000 go run ./cmd/server
@@ -20,4 +20,4 @@ package-web:
 	scripts/package_release.sh --web
 
 docker:
-	docker build -t chatgpt2api-go .
+	docker build -t nexora .

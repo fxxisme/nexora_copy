@@ -1,14 +1,10 @@
 <h1 align="center">
-  <img src="assets/logo.png" alt="ChatGPT2API" width="72" height="72" />
+  <img src="assets/logo.png" alt="Nexora" width="72" height="72" />
   <br />
-  ChatGPT2API Go
+  Nexora
 </h1>
 
-<p align="center">ChatGPT2API Go 是一个自托管的 ChatGPT Web API 转发服务。它通过 ChatGPT 网页端账号调用上游能力，并向外提供 OpenAI 兼容接口、Anthropic 兼容接口、在线画图工作台、账号池管理、图片管理、日志审计和 Web 管理面板。</p>
-
-<p align="center">
-  <img src="assets/hero.png" alt="ChatGPT2API" width="100%" />
-</p>
+<p align="center">Nexora 是一个自托管的 ChatGPT Web API 转发服务。它通过 ChatGPT 网页端账号调用上游能力，并向外提供 OpenAI 兼容接口、Anthropic 兼容接口、在线画图工作台、账号池管理、图片管理、日志审计和 Web 管理面板。</p>
 
 > [!WARNING]
 > 免责声明：
@@ -26,7 +22,7 @@
 
 ## 项目定位
 
-ChatGPT2API Go 的目标是把 ChatGPT 网页端能力封装成可自托管的 API 服务，适合下列场景：
+Nexora 的目标是把 ChatGPT 网页端能力封装成可自托管的 API 服务，适合下列场景：
 
 - 需要把 ChatGPT 网页端文本能力接入 OpenAI 兼容客户端。
 - 需要通过 API 调用 ChatGPT 网页端图片生成和图片编辑能力。
@@ -224,22 +220,22 @@ CHATGPT2API_NETWORK_TRACE=0 ./start.sh --port 3000
 
 ### 一键安装或更新
 
-无需下载整个仓库，直接运行 GitHub 托管的安装脚本。脚本会从 GitHub Release 下载最新版本并安装到 `./chatgpt2api-go-install`：
+无需下载整个仓库，直接运行 GitHub 托管的安装脚本。脚本会从 GitHub Release 下载最新版本并安装到 `./nexora-install`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jwbb903/CHATGPT2API-GO/main/scripts/install_latest.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zoreAI/nexora/main/scripts/install_latest.sh | bash
 ```
 
 指定安装目录：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jwbb903/CHATGPT2API-GO/main/scripts/install_latest.sh | bash -s -- --dir /opt/chatgpt2api-go
+curl -fsSL https://raw.githubusercontent.com/zoreAI/nexora/main/scripts/install_latest.sh | bash -s -- --dir /opt/nexora
 ```
 
 如果没有可用 Release 包，也可以从最新源码构建安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jwbb903/CHATGPT2API-GO/main/scripts/install_latest.sh | bash -s -- --from-source --web
+curl -fsSL https://raw.githubusercontent.com/zoreAI/nexora/main/scripts/install_latest.sh | bash -s -- --from-source --web
 ```
 
 已下载仓库源码时，也可以直接运行本地脚本：
@@ -251,15 +247,15 @@ bash scripts/install_latest.sh
 脚本会尽量保留已安装目录中的 `config.json` 和 `data/`。安装后按提示运行：
 
 ```bash
-cd ./chatgpt2api-go-install
+cd ./nexora-install
 ./start.sh --port 3000
 ```
 
 ### 使用发布包运行
 
 ```bash
-tar -xzf chatgpt2api-go-linux-amd64.tar.gz
-cd chatgpt2api-go-linux-amd64
+tar -xzf nexora-linux-amd64.tar.gz
+cd nexora-linux-amd64
 cp config.example.json config.json
 ./start.sh --port 3000
 ```
@@ -274,12 +270,12 @@ cp config.example.json config.json
 ### 使用 Docker 运行
 
 ```bash
-docker build -t chatgpt2api-go .
+docker build -t nexora .
 docker run --rm \
   -p 3000:80 \
   -v "$PWD/data:/app/data" \
   -e CHATGPT2API_AUTH_KEY=chatgpt2api \
-  chatgpt2api-go
+  nexora
 ```
 
 ### 本地开发运行
@@ -326,14 +322,14 @@ make package-web
 
 每个发布包都会包含：
 
-- 对应目标的 `chatgpt2api-go` 主程序二进制。
+- 对应目标的 `nexora` 主程序二进制。
 - 已构建的前端静态文件 `web_dist/`。
 - 对应目标可用的 `curl-impersonate` 二进制目录 `data/bin/curl-impersonate/`。
 
 发布包会生成到：
 
 ```text
-release/chatgpt2api-go-linux-amd64.tar.gz
+release/nexora-linux-amd64.tar.gz
 ```
 
 ## 配置
@@ -500,7 +496,7 @@ curl http://localhost:3000/v1/responses \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
     "model": "gpt-5",
-    "input": "用一句话介绍 ChatGPT2API Go"
+    "input": "用一句话介绍 Nexora"
   }'
 ```
 

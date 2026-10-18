@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ChatGPT2API-Go latest installer/updater
+# Nexora latest installer/updater
 #
 # Default behavior:
 #   - Detect current OS/ARCH.
 #   - Download latest GitHub Release archive.
-#   - Install to ./chatgpt2api-go-install unless --dir is specified.
+#   - Install to ./nexora-install unless --dir is specified.
 #   - Preserve existing config.json and data/ when updating.
 #   - If Release asset is unavailable, use --from-source to build from source.
 #
 # Examples:
 #   bash scripts/install_latest.sh
-#   bash scripts/install_latest.sh --dir /opt/chatgpt2api-go
+#   bash scripts/install_latest.sh --dir /opt/nexora
 #   bash scripts/install_latest.sh --from-source --web
-#   bash scripts/install_latest.sh --repo jwbb903/CHATGPT2API-GO --dir ./app
+#   bash scripts/install_latest.sh --repo zoreAI/nexora --dir ./app
 
-REPO="${CHATGPT2API_INSTALL_REPO:-jwbb903/CHATGPT2API-GO}"
-INSTALL_DIR="${CHATGPT2API_INSTALL_DIR:-$PWD/chatgpt2api-go-install}"
+REPO="${CHATGPT2API_INSTALL_REPO:-zoreAI/nexora}"
+INSTALL_DIR="${CHATGPT2API_INSTALL_DIR:-$PWD/nexora-install}"
 PORT="${CHATGPT2API_INSTALL_PORT:-3000}"
 FROM_SOURCE=0
 BUILD_WEB=0
@@ -30,8 +30,8 @@ usage() {
 Usage: scripts/install_latest.sh [options]
 
 Options:
-  --repo OWNER/REPO      GitHub repository. Default: jwbb903/CHATGPT2API-GO
-  --dir PATH            Install directory. Default: ./chatgpt2api-go-install
+  --repo OWNER/REPO      GitHub repository. Default: zoreAI/nexora
+  --dir PATH            Install directory. Default: ./nexora-install
   --port PORT           Port shown in final run command. Default: 3000
   --from-source         Clone latest source and build locally if no release archive is used.
   --web                 Build frontend when using --from-source.
@@ -47,7 +47,7 @@ Environment:
 
 Notes:
   - Existing config.json and data/ are preserved during update.
-  - Release mode expects assets named like chatgpt2api-go-linux-amd64.tar.gz.
+  - Release mode expects assets named like nexora-linux-amd64.tar.gz.
   - Source mode requires git, go, and optionally npm/node for --web.
 EOF
 }
@@ -135,11 +135,11 @@ check_install_dir() {
     return
   fi
   [[ -d "$INSTALL_DIR" ]] || fatal "$INSTALL_DIR exists but is not a directory"
-  if [[ "$FORCE" -eq 0 && ! -f "$INSTALL_DIR/start.sh" && ! -f "$INSTALL_DIR/chatgpt2api-go" && ! -f "$INSTALL_DIR/chatgpt2api" ]]; then
+  if [[ "$FORCE" -eq 0 && ! -f "$INSTALL_DIR/start.sh" && ! -f "$INSTALL_DIR/nexora" && ! -f "$INSTALL_DIR/chatgpt2api-go" && ! -f "$INSTALL_DIR/chatgpt2api" ]]; then
     local count
     count="$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
     if [[ "$count" != "0" ]]; then
-      fatal "$INSTALL_DIR is not empty and does not look like a ChatGPT2API-Go install dir. Use --force to continue."
+      fatal "$INSTALL_DIR is not empty and does not look like a Nexora install dir. Use --force to continue."
     fi
   fi
 }
@@ -149,7 +149,7 @@ install_from_release() {
   need_cmd tar
 
   read -r os arch < <(os_arch)
-  local asset="chatgpt2api-go-${os}-${arch}.tar.gz"
+  local asset="nexora-${os}-${arch}.tar.gz"
   local url="https://github.com/${REPO}/releases/latest/download/${asset}"
   local tmp archive extract_dir payload_dir backup_dir
   tmp="$(mktemp -d)"
@@ -177,8 +177,7 @@ install_from_release() {
   cp -a "$payload_dir"/. "$INSTALL_DIR"/
   restore_existing_state "$backup_dir"
   chmod +x "$INSTALL_DIR/start.sh" 2>/dev/null || true
-  chmod +x "$INSTALL_DIR/chatgpt2api-go" 2>/dev/null || true
-  chmod +x "$INSTALL_DIR/chatgpt2api" 2>/dev/null || true
+  chmod +x "$INSTALL_DIR/nexora" 2>/dev/null || true
   find "$INSTALL_DIR/data/bin/curl-impersonate" -type f -exec chmod +x {} + 2>/dev/null || true
   return 0
 }
@@ -212,21 +211,21 @@ install_from_source() {
 
   log "Building backend"
   mkdir -p bin
-  CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/chatgpt2api-go ./cmd/server
+  CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/nexora ./cmd/server
 
   check_install_dir
   backup_existing_state "$backup_dir"
   rm -rf "$INSTALL_DIR"
   mkdir -p "$INSTALL_DIR/bin"
-  cp bin/chatgpt2api-go "$INSTALL_DIR/bin/chatgpt2api-go"
-  cp bin/chatgpt2api-go "$INSTALL_DIR/chatgpt2api-go"
+  cp bin/nexora "$INSTALL_DIR/bin/nexora"
+  cp bin/nexora "$INSTALL_DIR/nexora"
   cp start.sh README.md LICENSE VERSION "$INSTALL_DIR"/ 2>/dev/null || true
   [[ -d web_dist ]] && cp -a web_dist "$INSTALL_DIR/web_dist"
   if [[ -f config.json ]]; then
     cp config.json "$INSTALL_DIR/config.example.json"
   fi
   restore_existing_state "$backup_dir"
-  chmod +x "$INSTALL_DIR/start.sh" "$INSTALL_DIR/chatgpt2api-go" "$INSTALL_DIR/bin/chatgpt2api-go" 2>/dev/null || true
+  chmod +x "$INSTALL_DIR/start.sh" "$INSTALL_DIR/nexora" "$INSTALL_DIR/bin/nexora" 2>/dev/null || true
 }
 
 main() {
