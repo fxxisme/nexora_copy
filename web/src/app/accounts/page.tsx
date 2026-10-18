@@ -628,7 +628,7 @@ function AccountsPageContent() {
           }
           return;
         }
-        timer = setTimeout(() => void poll(), 1200);
+        timer = setTimeout(() => void poll(), 3000);
       } catch (error) {
         if (stopped) return;
         const message = error instanceof Error ? error.message : "查询刷新进度失败";

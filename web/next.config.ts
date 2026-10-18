@@ -24,6 +24,7 @@ const nextConfig: NextConfig = {
     },
     output: isDevelopment ? undefined : 'export',
     trailingSlash: true,
+    ...(isDevelopment ? { skipTrailingSlashRedirect: true } : {}),
     images: {
         unoptimized: true,
     },
