@@ -156,8 +156,8 @@ func readCurlResponseHeader(reader *bufio.Reader) (int, string, http.Header, err
 			}
 			header.Add(textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(k)), strings.TrimSpace(v))
 		}
-		// Skip interim 1xx blocks and continue to the real response.
-		if code >= 100 && code < 200 && code != 101 {
+		// A HTTPS proxy emits its CONNECT response before the origin response.
+		if (code >= 100 && code < 200 && code != 101) || (code == 200 && strings.EqualFold(statusText, "Connection established")) {
 			continue
 		}
 		return code, statusText, header, nil

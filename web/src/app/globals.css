@@ -120,6 +120,10 @@
 }
 
 @layer base {
+  @media (min-width: 1024px) {
+    .app-authenticated .app-main { margin-left: 240px; padding-top: 64px; }
+    .app-authenticated.sidebar-collapsed .app-main { margin-left: 72px; }
+  }
   * {
     @apply border-border outline-ring/50;
   }

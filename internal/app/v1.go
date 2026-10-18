@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -25,7 +25,8 @@ func (s *Server) handleV1Models(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	models := []string{"gpt-image-2", "codex-gpt-image-2", "auto", "gpt-5", "gpt-5-mini", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-3-mini"}
+	models := append([]string{}, webImageModels...)
+	models = append(models, "codex-gpt-image-2", "auto", "gpt-5", "gpt-5-mini", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-3-mini")
 	data := []map[string]any{}
 	for _, m := range models {
 		data = append(data, map[string]any{"id": m, "object": "model", "created": time.Now().Unix(), "owned_by": "chatgpt2api-go"})
@@ -60,7 +61,6 @@ func (s *Server) imageResult(w http.ResponseWriter, r *http.Request, id *Identit
 	refs := inputs
 	ctx, cancel := context.WithTimeout(r.Context(), s.imageRequestTimeout())
 	defer cancel()
-	data := []map[string]any{}
 	items, err := s.generateImagesWithPool(ctx, prompt, model, size, resolution, refs, n)
 	if err != nil {
 		s.refundImage(id, n)
@@ -68,13 +68,10 @@ func (s *Server) imageResult(w http.ResponseWriter, r *http.Request, id *Identit
 		writeErr(w, 502, err.Error())
 		return
 	}
-	for _, result := range items {
+	data, saveErr := collectSavedImageResults(items, n, func(result upstreamImageResult) (map[string]any, error) {
 		rel, url, err := s.saveImage(r, result.Bytes)
 		if err != nil {
-			s.refundImage(id, n-len(data))
-			s.logCallFailure(callID, endpoint, model, action, err, nil)
-			writeErr(w, 500, err.Error())
-			return
+			return nil, err
 		}
 		s.recordOwner(id, rel)
 		s.recordPrompt(rel, prompt, isEdit)
@@ -82,16 +79,44 @@ func (s *Server) imageResult(w http.ResponseWriter, r *http.Request, id *Identit
 		if responseFormat == "b64_json" || responseFormat == "" {
 			item["b64_json"] = base64.StdEncoding.EncodeToString(result.Bytes)
 		}
-		data = append(data, item)
-		if len(data) >= n {
-			break
+		return item, nil
+	})
+	s.refundImage(id, n-len(data))
+	if len(data) == 0 {
+		status := http.StatusInternalServerError
+		if saveErr == nil {
+			saveErr = errNoImageGenerated
+			status = http.StatusBadGateway
+		}
+		s.logCallFailure(callID, endpoint, model, action, saveErr, map[string]any{"n": n})
+		writeErr(w, status, saveErr.Error())
+		return
+	}
+	logFields := map[string]any{"n": n, "image_count": len(data)}
+	if len(data) < n {
+		logFields["status"] = "partial_success"
+		logFields["failed_count"] = n - len(data)
+		if saveErr != nil {
+			logFields["error"] = saveErr.Error()
 		}
 	}
-	if len(data) < n {
-		s.refundImage(id, n-len(data))
-	}
-	s.logCallSuccess(callID, endpoint, model, action, map[string]any{"n": n, "image_count": len(data)})
+	s.logCallSuccess(callID, endpoint, model, action, logFields)
 	writeJSON(w, 200, map[string]any{"created": time.Now().Unix(), "data": data})
+}
+
+func collectSavedImageResults(items []upstreamImageResult, limit int, save func(upstreamImageResult) (map[string]any, error)) ([]map[string]any, error) {
+	data := make([]map[string]any, 0, min(len(items), limit))
+	for _, result := range items {
+		if len(data) >= limit {
+			break
+		}
+		item, err := save(result)
+		if err != nil {
+			return data, err
+		}
+		data = append(data, item)
+	}
+	return data, nil
 }
 func (s *Server) handleV1ImagesGenerations(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.requireIdentity(w, r)
@@ -128,36 +153,12 @@ func (s *Server) handleV1ImagesEdits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		writeErr(w, 400, "invalid multipart form")
+	parsed, err := parseImageEditRequest(r)
+	if err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
-	prompt := r.FormValue("prompt")
-	model := r.FormValue("model")
-	if model == "" {
-		model = "gpt-image-2"
-	}
-	n := 1
-	fmt.Sscanf(r.FormValue("n"), "%d", &n)
-	inputs := [][]byte{}
-	for _, key := range []string{"image", "image[]"} {
-		for _, fh := range r.MultipartForm.File[key] {
-			f, err := fh.Open()
-			if err != nil {
-				continue
-			}
-			b, _ := io.ReadAll(f)
-			_ = f.Close()
-			if len(b) > 0 {
-				inputs = append(inputs, b)
-			}
-		}
-	}
-	if len(inputs) == 0 {
-		writeErr(w, 400, "image file is required")
-		return
-	}
-	s.imageResult(w, r, id, prompt, model, r.FormValue("size"), r.FormValue("resolution"), r.FormValue("response_format"), n, true, inputs)
+	s.imageResult(w, r, id, parsed.Prompt, parsed.Model, parsed.Size, parsed.Resolution, parsed.ResponseFormat, parsed.N, true, parsed.Inputs)
 }
 func (s *Server) handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.requireIdentity(w, r)
@@ -307,29 +308,30 @@ func (s *Server) handleV1ChatImageCompletion(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), s.imageRequestTimeout())
 	defer cancel()
 	refs := extractChatImages(b)
-	data := []map[string]any{}
 	items, err := s.generateImagesWithPool(ctx, prompt, model, size, resolution, refs, n)
 	if err != nil {
 		s.refundImage(id, n)
 		writeErr(w, 502, err.Error())
 		return
 	}
-	for _, result := range items {
+	data, saveErr := collectSavedImageResults(items, n, func(result upstreamImageResult) (map[string]any, error) {
 		rel, url, err := s.saveImage(r, result.Bytes)
 		if err != nil {
-			s.refundImage(id, n-len(data))
-			writeErr(w, 500, err.Error())
-			return
+			return nil, err
 		}
 		s.recordOwner(id, rel)
 		s.recordPrompt(rel, prompt, len(refs) > 0)
-		data = append(data, map[string]any{"url": url, "b64_json": base64.StdEncoding.EncodeToString(result.Bytes), "revised_prompt": firstNonEmpty(result.RevisedPrompt, prompt)})
-		if len(data) >= n {
-			break
+		return map[string]any{"url": url, "b64_json": base64.StdEncoding.EncodeToString(result.Bytes), "revised_prompt": firstNonEmpty(result.RevisedPrompt, prompt)}, nil
+	})
+	s.refundImage(id, n-len(data))
+	if len(data) == 0 {
+		status := http.StatusInternalServerError
+		if saveErr == nil {
+			saveErr = errNoImageGenerated
+			status = http.StatusBadGateway
 		}
-	}
-	if len(data) < n {
-		s.refundImage(id, n-len(data))
+		writeErr(w, status, saveErr.Error())
+		return
 	}
 	content := buildChatImageMarkdown(data)
 	if boolAny(b["stream"], false) {
@@ -714,11 +716,14 @@ func (s *Server) imageResultStream(w http.ResponseWriter, r *http.Request, id *I
 	if n > 4 {
 		n = 4
 	}
+	callID := s.logCallStart(id, "/v1/images/generations", model, "文生图", prompt)
 	if err := s.checkContent(prompt); err != nil {
+		s.logCallFailure(callID, "/v1/images/generations", model, "文生图", err, nil)
 		writeErr(w, 400, err.Error())
 		return
 	}
 	if !s.consumeImage(id, n) {
+		s.logCallFailure(callID, "/v1/images/generations", model, "文生图", errors.New("画图额度不足"), nil)
 		writeErr(w, 402, "画图额度不足")
 		return
 	}
@@ -727,36 +732,70 @@ func (s *Server) imageResultStream(w http.ResponseWriter, r *http.Request, id *I
 	refs := inputs
 	w.Header().Set("Content-Type", "text/event-stream")
 	created := time.Now().Unix()
-	for i := 0; i < n; i++ {
-		items, err := s.generateImageWithPool(ctx, prompt, model, size, resolution, refs)
+	succeeded, firstErr := streamImageSlots(w, ctx, model, created, n, func() ([]upstreamImageResult, error) {
+		return s.generateImageWithPool(ctx, prompt, model, size, resolution, refs)
+	}, func(result upstreamImageResult) (map[string]any, error) {
+		rel, url, err := s.saveImage(r, result.Bytes)
 		if err != nil {
-			s.refundImage(id, n-i)
-			s.logSvc.add("call", "上游图片生成失败", map[string]any{"model": model, "error": err.Error()})
-			sse(w, map[string]any{"object": "image.generation.message", "created": created, "model": model, "index": i, "total": n, "message": err.Error()})
-			sseDone(w)
-			return
+			return nil, err
 		}
-		data := []map[string]any{}
-		for _, result := range items {
-			rel, url, err := s.saveImage(r, result.Bytes)
-			if err != nil {
-				s.refundImage(id, n-i)
-				sse(w, map[string]any{"error": err.Error()})
-				sseDone(w)
-				return
+		s.recordOwner(id, rel)
+		s.recordPrompt(rel, prompt, isEdit)
+		return map[string]any{"url": url, "b64_json": base64.StdEncoding.EncodeToString(result.Bytes), "revised_prompt": firstNonEmpty(result.RevisedPrompt, prompt)}, nil
+	})
+	s.refundImage(id, n-succeeded)
+	logFields := map[string]any{"n": n, "image_count": succeeded}
+	if succeeded == 0 {
+		s.logCallFailure(callID, "/v1/images/generations", model, "文生图", firstErr, logFields)
+	} else {
+		if succeeded < n {
+			logFields["status"] = "partial_success"
+			logFields["failed_count"] = n - succeeded
+			if firstErr != nil {
+				logFields["error"] = firstErr.Error()
 			}
-			s.recordOwner(id, rel)
-			s.recordPrompt(rel, prompt, isEdit)
-			data = append(data, map[string]any{"url": url, "b64_json": base64.StdEncoding.EncodeToString(result.Bytes), "revised_prompt": firstNonEmpty(result.RevisedPrompt, prompt)})
-			break
 		}
-		sse(w, map[string]any{"object": "image.generation.result", "created": created, "model": model, "index": i, "total": n, "data": data})
+		s.logCallSuccess(callID, "/v1/images/generations", model, "文生图", logFields)
 	}
-	ssedoneAndDone(w)
+	sseDone(w)
 }
 
-func ssedoneAndDone(w http.ResponseWriter) {
-	fmt.Fprint(w, "data: [DONE]\n\n")
+func streamImageSlots(w http.ResponseWriter, ctx context.Context, model string, created int64, n int, generate func() ([]upstreamImageResult, error), save func(upstreamImageResult) (map[string]any, error)) (int, error) {
+	succeeded := 0
+	var firstErr error
+	for i := 0; i < n; i++ {
+		if err := ctx.Err(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
+		items, err := generate()
+		if err == nil && len(items) == 0 {
+			err = errNoImageGenerated
+		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			sse(w, map[string]any{"object": "image.generation.message", "created": created, "model": model, "index": i, "total": n, "message": err.Error()})
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		item, err := save(items[0])
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			sse(w, map[string]any{"object": "image.generation.message", "created": created, "model": model, "index": i, "total": n, "message": err.Error()})
+			break
+		}
+		succeeded++
+		sse(w, map[string]any{"object": "image.generation.result", "created": created, "model": model, "index": i, "total": n, "data": []map[string]any{item}})
+	}
+	return succeeded, firstErr
 }
 
 func (s *Server) anthropicMessagesFromBody(b map[string]any) ([]map[string]any, error) {
@@ -1330,14 +1369,6 @@ func approxTokens(s string) int {
 		return maxInt(1, len(runes)/2)
 	}
 	return maxInt(1, len(s)/4)
-}
-
-func isSupportedImageModel(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	if m == "gpt-image-2" || m == "codex-gpt-image-2" {
-		return true
-	}
-	return strings.HasSuffix(m, "-codex-gpt-image-2")
 }
 
 func isImageChatRequest(b map[string]any) bool {

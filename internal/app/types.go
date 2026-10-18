@@ -27,6 +27,8 @@ type Config struct {
 
 type Account struct {
 	AccessToken       string            `json:"access_token"`
+	GroupID           string            `json:"group_id,omitempty"`
+	Proxy             string            `json:"proxy,omitempty"`
 	Type              string            `json:"type"`
 	SourceType        string            `json:"source_type,omitempty"`
 	ExportType        string            `json:"export_type,omitempty"`
@@ -35,7 +37,13 @@ type Account struct {
 	Quota             int               `json:"quota"`
 	InitialQuota      int               `json:"initial_quota,omitempty"`
 	ImageQuotaUnknown bool              `json:"image_quota_unknown,omitempty"`
+	TrialState        string            `json:"trial_state,omitempty"`
+	TrialPromoID      string            `json:"trial_promo_id,omitempty"`
+	TrialPromoLabel   string            `json:"trial_promo_label,omitempty"`
+	TrialCheckedAt    string            `json:"trial_checked_at,omitempty"`
 	Email             *string           `json:"email,omitempty"`
+	MFAStatus         string            `json:"mfa_status,omitempty"`
+	MFASecret         *string           `json:"mfa_secret,omitempty"`
 	UserID            *string           `json:"user_id,omitempty"`
 	LimitsProgress    []map[string]any  `json:"limits_progress,omitempty"`
 	DefaultModelSlug  *string           `json:"default_model_slug,omitempty"`
@@ -109,17 +117,29 @@ type LogItem struct {
 }
 
 type ImageTask struct {
-	ID         string           `json:"id"`
-	OwnerID    string           `json:"owner_id,omitempty"`
-	Status     string           `json:"status"`
-	Mode       string           `json:"mode"`
-	Model      string           `json:"model,omitempty"`
-	Size       string           `json:"size,omitempty"`
-	Resolution string           `json:"resolution,omitempty"`
-	CreatedAt  string           `json:"created_at"`
-	UpdatedAt  string           `json:"updated_at"`
-	Data       []map[string]any `json:"data,omitempty"`
-	Error      string           `json:"error,omitempty"`
+	ID             string           `json:"id"`
+	OwnerID        string           `json:"owner_id,omitempty"`
+	Status         string           `json:"status"`
+	Terminal       bool             `json:"terminal"`
+	Mode           string           `json:"mode"`
+	Model          string           `json:"model,omitempty"`
+	Size           string           `json:"size,omitempty"`
+	Resolution     string           `json:"resolution,omitempty"`
+	StageCode      string           `json:"stage_code,omitempty"`
+	StageLabel     string           `json:"stage_label,omitempty"`
+	StartedAt      string           `json:"started_at,omitempty"`
+	RequestedCount int              `json:"requested_count,omitempty"`
+	SucceededCount int              `json:"succeeded_count,omitempty"`
+	FailedCount    int              `json:"failed_count,omitempty"`
+	PendingCount   int              `json:"pending_count,omitempty"`
+	ChargedCount   int              `json:"charged_count,omitempty"`
+	QuotaSettled   bool             `json:"quota_settled,omitempty"`
+	DurationMS     int64            `json:"duration_ms,omitempty"`
+	ElapsedMS      int64            `json:"elapsed_ms,omitempty"`
+	CreatedAt      string           `json:"created_at"`
+	UpdatedAt      string           `json:"updated_at"`
+	Data           []map[string]any `json:"data,omitempty"`
+	Error          string           `json:"error,omitempty"`
 }
 
 type GalleryItem struct {

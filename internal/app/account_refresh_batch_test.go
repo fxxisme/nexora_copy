@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -214,6 +216,74 @@ func TestGetUserInfoKeepsUnknownQuotaWhenChecksSucceed(t *testing.T) {
 	info, err := client.GetUserInfo(context.Background())
 	if err != nil || info.Type != "" || !info.ImageQuotaUnknown {
 		t.Fatalf("account info type=%q unknown=%t err=%v", info.Type, info.ImageQuotaUnknown, err)
+	}
+}
+
+func TestParseAccountTrial(t *testing.T) {
+	tests := []struct {
+		name, payload, state, promoID, label string
+	}{
+		{"free trial", `{"account":{"plan_type":"free"},"entitlement":{"subscription_plan":"chatgptfreeplan"},"eligible_promo_campaigns":{"plus":{"id":"plus-1-month-free"}}}`, "eligible", "plus-1-month-free", "一个月免费"},
+		{"discount", `{"account":{"plan_type":"free"},"eligible_promo_campaigns":{"plus":{"id":"half-off","metadata":{"discount":{"percentage":50},"duration":{"num_periods":2}}}}}`, "discount", "half-off", "2个月5折"},
+		{"subscribed", `{"account":{"plan_type":"plus"},"eligible_promo_campaigns":{"plus":{"id":"plus-1-month-free"}}}`, "subscribed", "", "已订阅"},
+		{"no campaign", `{"account":{"plan_type":"free"}}`, "not-eligible", "", "无优惠"},
+		{"missing account", `{"eligible_promo_campaigns":{}}`, "unknown", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(tt.payload), &entry); err != nil {
+				t.Fatal(err)
+			}
+			state, promoID, label := parseAccountTrial(entry)
+			if state != tt.state || promoID != tt.promoID || label != tt.label {
+				t.Fatalf("got (%q, %q, %q), want (%q, %q, %q)", state, promoID, label, tt.state, tt.promoID, tt.label)
+			}
+		})
+	}
+}
+
+func TestGetUserInfoTreatsTrialProbeFailureAsUnknown(t *testing.T) {
+	client := &UpstreamClient{token: "token", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/backend-api/me":
+			return upstreamTestResponse(200, `{"email":"user@example.com"}`), nil
+		case "/backend-api/conversation/init":
+			return upstreamTestResponse(200, `{"limits_progress":[]}`), nil
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			return upstreamTestResponse(503, "unavailable"), nil
+		default:
+			t.Fatalf("unexpected account info path %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+	info, err := client.GetUserInfo(context.Background())
+	if err != nil || info.TrialState != "unknown" || info.TrialCheckedAt == "" {
+		t.Fatalf("trial probe failure: state=%q checked=%q err=%v", info.TrialState, info.TrialCheckedAt, err)
+	}
+}
+
+func TestGetUserInfoUsesTokenAccountForTrial(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}`))
+	client := &UpstreamClient{token: "header." + payload + ".signature", client: upstreamDoerFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/backend-api/me":
+			return upstreamTestResponse(200, `{"email":"user@example.com"}`), nil
+		case "/backend-api/conversation/init":
+			return upstreamTestResponse(200, `{"limits_progress":[]}`), nil
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			if req.Header.Get("ChatGPT-Account-Id") != "account-123" {
+				t.Fatalf("account header = %q", req.Header.Get("ChatGPT-Account-Id"))
+			}
+			return upstreamTestResponse(200, `{"accounts":{"default":{"account":{"plan_type":"free"}},"account-123":{"account":{"plan_type":"free"},"eligible_promo_campaigns":{"plus":{"id":"plus-1-month-free"}}}}}}`), nil
+		default:
+			t.Fatalf("unexpected account info path %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+	info, err := client.GetUserInfo(context.Background())
+	if err != nil || info.TrialState != "eligible" || info.TrialPromoLabel != "一个月免费" {
+		t.Fatalf("token account trial: state=%q label=%q err=%v", info.TrialState, info.TrialPromoLabel, err)
 	}
 }
 

@@ -103,6 +103,8 @@ ChatGPT2API Go 的目标是把 ChatGPT 网页端能力封装成可自托管的 A
 - 支持 `1:1`、`16:9`、`9:16`、`4:3`、`3:4` 画幅。
 - 支持 1K、2K、4K 清晰度。
 - 支持图片任务、历史记录、图片归属和下载。
+- 生图输入区提供提示词库，可搜索、筛选、预览并选用提示词；管理员可启停和刷新词源。
+- 提示词库内置离线快照，远端刷新失败时继续使用已有缓存；刷新请求使用系统选定的代理出口。
 
 ### 账号池管理
 
@@ -192,21 +194,11 @@ CHATGPT2API_NETWORK_TRACE=0 ./start.sh --port 3000
 
 ### 存储
 
-当前后端使用本地 JSON 文件存储。
+默认使用 SQLite，数据库文件为 `data/chatgpt2api.db`。设置 `DATABASE_URL=postgresql://user:password@host:5432/dbname` 可切换到 PostgreSQL。SQLite 自定义路径使用 `DATABASE_URL=sqlite:///绝对路径/数据库文件.db`。旧的 `STORAGE_BACKEND=postgres` 仍可配合连接串使用；JSON 和 Git 后端不再支持。
 
-主要数据文件：
+首次启动时，服务会将 `data/` 下已有的账号、密钥、任务、画廊、注册状态和 `logs.jsonl` 导入数据库；旧文件原样保留作为备份。数据库已初始化后不会再次导入。图片文件继续存放在 `data/images/`，启动配置仍使用根目录的 `config.json`。不再支持 JSON 或 Git 作为业务存储后端。
 
-- `data/accounts.json`
-- `data/auth_keys.json`
-- `data/gallery.json`
-- `data/image_tasks.json`
-- `data/logs.json`
-- `data/image_owners.json`
-- `data/image_prompts.json`
-- `data/image_tags.json`
-- `data/chat_conversations.json`
-- `data/cpa_pools.json`
-- `data/sub2api_servers.json`
+账号与用户密钥在数据库中分别存为独立记录。旧版 Go SQL 数据库中整份集合文档会在启动时一次性迁入记录表；迁移失败会阻止启动，原文档保留供排查。升级前应停止旧服务进程，避免新旧版本同时写入同一数据库。
 
 ## 模型说明
 
@@ -373,6 +365,8 @@ config.json
 }
 ```
 
+图片任务后台队列默认使用 16 个 worker，最多接收 256 个待处理任务。队列满时接口返回 `503`，不会创建任务或扣除额度。可通过环境变量调整：
+
 图片相关超时说明：
 
 - `image_poll_timeout_secs`：图片 SSE 等待和最终图片记录轮询的总超时，设置为 `600` 即最多等待 10 分钟。
@@ -388,6 +382,8 @@ config.json
 | `CHATGPT2API_UPSTREAM_TRANSPORT` | 上游传输方式，支持 `tls-client`、`curl-impersonate` |
 | `CHATGPT2API_CURL_IMPERSONATE_BIN` | 指定 `curl-impersonate` 二进制路径 |
 | `CHATGPT2API_CURL_IMPERSONATE_URL` | 指定 `curl-impersonate` 下载地址 |
+| `CHATGPT2API_IMAGE_TASK_WORKERS` | 图片任务后台 worker 数量，默认 `16` |
+| `CHATGPT2API_IMAGE_TASK_QUEUE_SIZE` | worker 之外的排队容量，默认 `256` |
 | `CHATGPT2API_TLS_PROFILE` | 指定 tls-client 指纹 profile |
 | `CHATGPT2API_SENTINEL_MODE` | 默认 `goja`，仅需 Go 进程；可选 `browser` 或试验性 `node` |
 | `CHATGPT2API_CHROME_BIN` | `browser` 模式使用的 Chrome/Chromium 可执行文件 |
@@ -699,7 +695,7 @@ internal/app/turnstile.go          Turnstile token 本地求解
 internal/app/trace_log.go          终端链路追踪日志
 internal/app/accounts.go           账号导入和刷新
 internal/app/account_pool.go       账号选择和并发控制
-internal/app/store.go              JSON 文件存储
+internal/app/store.go              SQLite / PostgreSQL 存储与旧文件导入
 web/                               前端源码
 web_dist/                          前端构建产物
 scripts/package_release.sh         发布打包脚本

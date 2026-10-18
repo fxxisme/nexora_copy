@@ -32,7 +32,7 @@ func (s *Server) startLimitedAccountWatcher() {
 					cancel()
 					continue
 				}
-				client, err := NewUpstreamClientForAccount(observed, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+				client, err := s.newUpstreamClientForAccount(observed)
 				if err != nil {
 					release()
 					cancel()

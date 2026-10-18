@@ -45,8 +45,18 @@ function getUrls(item: SystemLog | null) {
 function getStatus(item: SystemLog) {
   const status = item.detail?.status;
   if (status === "success") return "成功";
+  if (status === "partial_success") return "部分成功";
   if (status === "failed") return "失败";
+  if (status === "started") return "进行中";
   return "-";
+}
+
+function getStatusVariant(item: SystemLog): "success" | "warning" | "danger" | "secondary" {
+  const status = item.detail?.status;
+  if (status === "success") return "success";
+  if (status === "partial_success") return "warning";
+  if (status === "failed") return "danger";
+  return "secondary";
 }
 
 // 模块级缓存：路由切换会让 LogsContent 重新挂载，
@@ -246,7 +256,7 @@ function LogsContent() {
                       {isCallLog ? <TableCell>{formatDuration(item)}</TableCell> : null}
                       {isCallLog ? (
                         <TableCell>
-                          <Badge variant={item.detail?.status === "failed" ? "danger" : "success"} className="rounded-md">
+                          <Badge variant={getStatusVariant(item)} className="rounded-md">
                             {getStatus(item)}
                           </Badge>
                         </TableCell>

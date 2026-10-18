@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentProps } from "react";
 import {
   Ban,
   CheckCircle2,
@@ -12,19 +11,21 @@ import {
   Copy,
   Download,
   LayoutGrid,
+  KeyRound,
   LoaderCircle,
+  MoreHorizontal,
   Pencil,
   RefreshCw,
   Rows3,
   Search,
   Trash2,
   UserRound,
+  UsersRound,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -35,6 +36,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -44,19 +46,26 @@ import {
 } from "@/components/ui/select";
 import {
   deleteAccounts,
-  deleteAccountsWithOptions,
+  fetchAccountGroups,
   fetchAccountRefreshProgress,
   fetchAccounts,
+  fetchAccountMFACode,
+  fetchProxyGroups,
   startAccountRefresh,
   updateAccount,
+  updateAccountsGroup,
+  updateAccountsStatus,
   type Account,
+  type AccountGroup,
   type AccountRefreshProgress,
   type AccountStatus,
+  type ProxyGroup,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
 
 import { AccountImportDialog } from "./components/account-import-dialog";
+import { AccountGroupsDialog } from "./components/account-groups-dialog";
 
 const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] = [
   { label: "全部状态", value: "all" },
@@ -66,18 +75,15 @@ const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] = 
   { label: "禁用", value: "禁用" },
 ];
 
-const statusMeta: Record<
-  AccountStatus,
-  {
-    icon: typeof CheckCircle2;
-    badge: ComponentProps<typeof Badge>["variant"];
-  }
-> = {
-  正常: { icon: CheckCircle2, badge: "success" },
-  限流: { icon: CircleAlert, badge: "warning" },
-  异常: { icon: CircleOff, badge: "danger" },
-  禁用: { icon: Ban, badge: "secondary" },
-};
+const trialFilterOptions = [
+  { label: "全部优惠", value: "all" },
+  { label: "有优惠资格", value: "offer" },
+  { label: "一个月免费", value: "eligible" },
+  { label: "折扣券", value: "discount" },
+  { label: "无优惠", value: "not-eligible" },
+  { label: "已订阅", value: "subscribed" },
+  { label: "未判定", value: "unknown" },
+] as const;
 
 const metricCards = [
   { key: "total", label: "账户总数", color: "text-stone-900", icon: UserRound },
@@ -162,13 +168,15 @@ function maskToken(token?: string) {
   return `${token.slice(0, 16)}...${token.slice(-8)}`;
 }
 
-function downloadTokens(accounts: Account[]) {
-  const content = `${accounts.map((account) => account.access_token).join("\n")}\n`;
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+function downloadAccounts(accounts: Account[], format: "txt" | "json") {
+  const content = format === "json"
+    ? JSON.stringify(accounts, null, 2)
+    : `${accounts.map((account) => account.access_token).join("\n")}\n`;
+  const blob = new Blob([content], { type: format === "json" ? "application/json" : "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `accounts-${Date.now()}.txt`;
+  link.download = `accounts-${Date.now()}.${format}`;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -179,6 +187,42 @@ function displayAccountType(account: Account) {
 
 function displayAccountSource(account: Account) {
   return String(account.source_type || "web").toLowerCase() === "codex" ? "Codex" : "Web";
+}
+
+function proxyAssignmentLabel(assignment: string, groups: ProxyGroup[]) {
+  if (!assignment) return "默认出口";
+  if (assignment === "direct") return "直连";
+  if (assignment.startsWith("group:")) {
+    const groupID = assignment.slice(6);
+    return groups.find((group) => group.id === groupID)?.name ?? "代理组已移除";
+  }
+  return "自定义代理";
+}
+
+function accountProxyLabel(account: Account, groups: ProxyGroup[], accountGroups: AccountGroup[]) {
+  const group = accountGroups.find((item) => item.id === account.group_id);
+  const assignment = account.proxy?.trim() || (group?.enabled ? group.proxy : "");
+  const label = proxyAssignmentLabel(assignment ?? "", groups);
+  return group ? `${group.name} · ${label}` : account.group_id ? `账号组已移除 · ${label}` : label;
+}
+
+function TrialBadge({ account }: { account: Account }) {
+  if (!account.trial_state) return null;
+  const label = account.trial_promo_label || (account.trial_state === "unknown" ? "优惠未判定" : account.trial_state === "subscribed" ? "已订阅" : "无优惠");
+  return (
+    <Badge
+      variant="outline"
+      title={account.trial_checked_at ? `优惠检查：${formatDateTime(account.trial_checked_at)}` : undefined}
+      className={cn(
+        "rounded-md font-medium",
+        account.trial_state === "eligible" && "border-emerald-200 bg-emerald-50 text-emerald-700",
+        account.trial_state === "discount" && "border-amber-200 bg-amber-50 text-amber-700",
+        account.trial_state === "unknown" && "text-muted-foreground",
+      )}
+    >
+      {label}
+    </Badge>
+  );
 }
 
 const TYPE_BADGE_CLASS: Record<string, string> = {
@@ -262,23 +306,33 @@ function HealthPills({
 
 function AccountCard({
   account,
+  proxyLabel,
   selected,
   onSelectChange,
   onEdit,
   onRefresh,
+  onToggleStatus,
   onDelete,
   onCopyToken,
+  onCopyPassword,
+  onCopyMFA,
+  onCopyMFACode,
   isRefreshing,
   isDeleting,
   isUpdating,
 }: {
   account: Account;
+  proxyLabel: string;
   selected: boolean;
   onSelectChange: (v: boolean) => void;
   onEdit: () => void;
   onRefresh: () => void;
+  onToggleStatus: () => void;
   onDelete: () => void;
   onCopyToken: () => void;
+  onCopyPassword: () => void;
+  onCopyMFA: () => void;
+  onCopyMFACode: () => void;
   isRefreshing: boolean;
   isDeleting: boolean;
   isUpdating: boolean;
@@ -299,7 +353,7 @@ function AccountCard({
   return (
     <div
       className={cn(
-        "group flex flex-col rounded-2xl border border-border bg-card p-4 shadow-sm transition hover:border-primary/40 hover:shadow-md",
+        "group flex flex-col rounded-lg border border-border bg-card p-4 transition hover:border-primary/40",
         selected && "border-primary/60 ring-1 ring-primary/20",
       )}
     >
@@ -330,7 +384,16 @@ function AccountCard({
           >
             {account.status}
           </Badge>
+          <TrialBadge account={account} />
           {account.is_signup_token ? <Badge variant="outline">注册令牌</Badge> : null}
+          {account.mfa_status ? (
+            <Badge variant="outline" title={account.mfa_status === "pending" ? "验证码确认尚未成功" : undefined}>
+              2FA {account.mfa_status === "enabled" ? "已启用" : account.mfa_status === "pending" ? "待确认" : "失败"}
+            </Badge>
+          ) : null}
+          <Badge variant="outline" className={account.refresh_token ? "border-emerald-200 text-emerald-700" : "text-muted-foreground"}>
+            RT {account.refresh_token ? "已保存" : "缺失"}
+          </Badge>
         </div>
       </div>
 
@@ -339,10 +402,26 @@ function AccountCard({
       </div>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        <span>出口：{proxyLabel}</span>
         <span className="inline-flex items-center gap-1">
           <span>Token</span>
           <span className="font-data text-foreground/80">{maskToken(account.access_token)}</span>
         </span>
+        {account.password ? (
+          <button type="button" onClick={onCopyPassword} title="复制登录密码" className="inline-flex items-center gap-1 hover:text-foreground">
+            <Copy className="size-3" /> 密码
+          </button>
+        ) : null}
+        {account.mfa_secret ? (
+          <button type="button" onClick={onCopyMFA} title="复制 2FA 密钥" className="inline-flex items-center gap-1 hover:text-foreground">
+            <Copy className="size-3" /> 2FA 密钥
+          </button>
+        ) : null}
+        {account.mfa_status === "enabled" ? (
+          <button type="button" onClick={onCopyMFACode} title="复制当前 2FA 验证码" className="inline-flex items-center gap-1 hover:text-foreground">
+            <KeyRound className="size-3" /> 验证码
+          </button>
+        ) : null}
         {restore.absolute !== "—" ? (
           <span className="inline-flex items-center gap-1">
             <span>恢复</span>
@@ -408,7 +487,7 @@ function AccountCard({
           className="cursor-pointer rounded-md p-1.5 transition hover:bg-secondary hover:text-foreground disabled:opacity-50"
           onClick={onEdit}
           disabled={isUpdating}
-          title="编辑状态"
+          title="编辑账号"
         >
           <Pencil className="size-4" />
         </button>
@@ -420,6 +499,16 @@ function AccountCard({
           title="刷新额度"
         >
           <RefreshCw className={cn("size-4", isRefreshing && "animate-spin")} />
+        </button>
+        <button
+          type="button"
+          className="cursor-pointer rounded-md p-1.5 transition hover:bg-secondary hover:text-foreground disabled:opacity-50"
+          onClick={onToggleStatus}
+          disabled={isUpdating}
+          title={account.status === "禁用" ? "启用账号" : "禁用账号"}
+          aria-label={account.status === "禁用" ? "启用账号" : "禁用账号"}
+        >
+          {account.status === "禁用" ? <CheckCircle2 className="size-4" /> : <Ban className="size-4" />}
         </button>
         <button
           type="button"
@@ -441,6 +530,7 @@ let cachedAccounts: Account[] | null = null;
 
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
+  const accountsLoadVersionRef = useRef(0);
   // 命中模块级缓存时直接拿来当初始 state，避免再次切到号池页时
   // accounts 从 [] 起跳、isLoading=true 让大表格塌缩成 spinner 再撑回。
   const [accounts, setAccountsState] = useState<Account[]>(() => cachedAccounts ?? []);
@@ -448,17 +538,27 @@ function AccountsPageContent() {
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
+  const [trialFilter, setTrialFilter] = useState<(typeof trialFilterOptions)[number]["value"]>("all");
+  const [groupFilter, setGroupFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
+  const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([]);
+  const [accountGroups, setAccountGroups] = useState<AccountGroup[]>([]);
+  const [editAccountGroupID, setEditAccountGroupID] = useState("");
+  const [editProxyMode, setEditProxyMode] = useState<"inherit" | "direct" | "group" | "custom">("inherit");
+  const [editProxyGroupID, setEditProxyGroupID] = useState("");
+  const [editProxyURL, setEditProxyURL] = useState("");
   const [isLoading, setIsLoading] = useState(() => cachedAccounts === null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState<AccountRefreshProgress | null>(null);
   const [activeRefreshId, setActiveRefreshId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
+  const [isBatchUpdating, setIsBatchUpdating] = useState(false);
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   // 进度条最小显示时长：即便接口几十 ms 就返回，进度条也至少撑过一次完整滑动，
   // 避免出现"按钮 disabled 闪一下、进度条一闪而过"的视觉抖动。
   const [showProgress, setShowProgress] = useState(false);
@@ -469,16 +569,35 @@ function AccountsPageContent() {
     setAccountsState(next);
   };
 
+  const copyMFACode = async (account: Account) => {
+    try {
+      const result = await fetchAccountMFACode(account.access_token);
+      await navigator.clipboard.writeText(result.code);
+      toast.success(`2FA 验证码已复制，${result.expires_in} 秒后更新`);
+    } catch {
+      toast.error("获取 2FA 验证码失败");
+    }
+  };
+
+  const copyPassword = async (account: Account) => {
+    if (!account.password) return;
+    try {
+      await navigator.clipboard.writeText(account.password);
+      toast.success("登录密码已复制");
+    } catch {
+      toast.error("复制密码失败，请检查浏览器剪贴板权限");
+    }
+  };
+
   // 持久化视图偏好
   useEffect(() => {
     const saved = window.localStorage.getItem("accounts.viewMode");
     if (saved === "list" || saved === "grid") {
       setViewMode(saved);
+    } else if (window.matchMedia("(max-width: 639px)").matches) {
+      setViewMode("grid");
     }
   }, []);
-  useEffect(() => {
-    window.localStorage.setItem("accounts.viewMode", viewMode);
-  }, [viewMode]);
 
   useEffect(() => {
     const savedId = window.sessionStorage.getItem("accounts.refreshProgressId");
@@ -498,13 +617,10 @@ function AccountsPageContent() {
         if (stopped) return;
         setRefreshProgress(progress);
         if (progress.done) {
-          const data = await fetchAccounts();
-          if (stopped) return;
-          setAccounts(data.items);
-          setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
           window.sessionStorage.removeItem("accounts.refreshProgressId");
           setActiveRefreshId(null);
           setIsRefreshing(false);
+          void loadAccounts(true, true);
           if (progress.failed > 0) {
             toast.error(`刷新成功 ${progress.refreshed} 个，失败 ${progress.failed} 个`);
           } else {
@@ -521,7 +637,7 @@ function AccountsPageContent() {
           setActiveRefreshId(null);
           setIsRefreshing(false);
           setRefreshProgress(null);
-          void loadAccounts(true);
+          void loadAccounts(true, true);
           toast.error("刷新任务已失效，请重新发起");
           return;
         }
@@ -535,19 +651,22 @@ function AccountsPageContent() {
     };
   }, [activeRefreshId]);
 
-  const loadAccounts = async (silent = false) => {
+  const loadAccounts = async (silent = false, reportError = false) => {
+    const version = ++accountsLoadVersionRef.current;
     if (!silent) {
       setIsLoading(true);
     }
     try {
       const data = await fetchAccounts();
+      if (version !== accountsLoadVersionRef.current) return;
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
     } catch (error) {
+      if (version !== accountsLoadVersionRef.current) return;
       const message = error instanceof Error ? error.message : "加载账户失败";
-      if (!silent) toast.error(message);
+      if (!silent || reportError) toast.error(`加载账户列表失败：${message}`);
     } finally {
-      if (!silent) {
+      if (version === accountsLoadVersionRef.current) {
         setIsLoading(false);
       }
     }
@@ -574,16 +693,30 @@ function AccountsPageContent() {
     void loadAccounts(cachedAccounts !== null);
   }, []);
 
+  useEffect(() => {
+    void fetchProxyGroups().then((data) => setProxyGroups(data.groups)).catch(() => toast.error("加载代理组失败"));
+    void fetchAccountGroups().then((data) => setAccountGroups(data.groups)).catch(() => toast.error("加载账号组失败"));
+  }, []);
+
   const filteredAccounts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return accounts.filter((account) => {
-      const searchMatched =
-        normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
+      const searchMatched = normalizedQuery.length === 0 || [
+        account.email,
+        account.user_id,
+        account.access_token,
+        displayAccountType(account),
+        displayAccountSource(account),
+      ].some((value) => value?.toLowerCase().includes(normalizedQuery));
       const typeMatched = typeFilter === "all" || displayAccountType(account) === typeFilter;
       const statusMatched = statusFilter === "all" || account.status === statusFilter;
-      return searchMatched && typeMatched && statusMatched;
+      const trialState = account.trial_state ?? "unknown";
+      const trialMatched = trialFilter === "all" ||
+        (trialFilter === "offer" ? trialState === "eligible" || trialState === "discount" : trialState === trialFilter);
+      const groupMatched = groupFilter === "all" || (groupFilter === "none" ? !account.group_id : account.group_id === groupFilter);
+      return searchMatched && typeMatched && statusMatched && trialMatched && groupMatched;
     });
-  }, [accounts, query, statusFilter, typeFilter]);
+  }, [accounts, query, statusFilter, typeFilter, trialFilter, groupFilter]);
 
   const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
@@ -616,6 +749,11 @@ function AccountsPageContent() {
     return accounts.filter((item) => selectedSet.has(item.access_token)).map((item) => item.access_token);
   }, [accounts, selectedIds]);
 
+  const selectedAccounts = useMemo(() => {
+    const selectedSet = new Set(selectedIds);
+    return accounts.filter((item) => selectedSet.has(item.access_token));
+  }, [accounts, selectedIds]);
+
   const abnormalTokens = useMemo(() => {
     return accounts.filter((item) => item.status === "异常").map((item) => item.access_token);
   }, [accounts]);
@@ -634,7 +772,7 @@ function AccountsPageContent() {
     return items;
   }, [pageCount, safePage]);
 
-  const handleDeleteTokens = async (tokens: string[], deleteMailboxes = false) => {
+  const handleDeleteTokens = async (tokens: string[]) => {
     if (tokens.length === 0) {
       toast.error("请先选择要删除的账户");
       return;
@@ -642,7 +780,7 @@ function AccountsPageContent() {
 
     setIsDeleting(true);
     try {
-      const data = deleteMailboxes ? await deleteAccountsWithOptions(tokens, true) : await deleteAccounts(tokens);
+      const data = await deleteAccounts(tokens);
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
       toast.success(`删除 ${data.removed ?? 0} 个账户`);
@@ -676,6 +814,11 @@ function AccountsPageContent() {
   const openEditDialog = (account: Account) => {
     setEditingAccount(account);
     setEditStatus(account.status);
+    setEditAccountGroupID(account.group_id ?? "");
+    const assignment = account.proxy?.trim() ?? "";
+    setEditProxyMode(!assignment ? "inherit" : assignment === "direct" ? "direct" : assignment.startsWith("group:") ? "group" : "custom");
+    setEditProxyGroupID(assignment.startsWith("group:") ? assignment.slice(6) : "");
+    setEditProxyURL(assignment && assignment !== "direct" && !assignment.startsWith("group:") ? assignment : "");
   };
 
   const handleUpdateAccount = async () => {
@@ -683,10 +826,21 @@ function AccountsPageContent() {
       return;
     }
 
+    if (editProxyMode === "group" && !editProxyGroupID) {
+      toast.error("请选择代理组");
+      return;
+    }
+    if (editProxyMode === "custom" && !editProxyURL.trim()) {
+      toast.error("请填写代理地址");
+      return;
+    }
+    const proxy = editProxyMode === "inherit" ? "" : editProxyMode === "direct" ? "direct" : editProxyMode === "group" ? `group:${editProxyGroupID}` : editProxyURL.trim();
     setIsUpdating(true);
     try {
       const data = await updateAccount(editingAccount.access_token, {
         status: editStatus,
+        group_id: editAccountGroupID,
+        proxy,
       });
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
@@ -697,6 +851,36 @@ function AccountsPageContent() {
       toast.error(message);
     } finally {
       setIsUpdating(false);
+    }
+  };
+
+  const handleUpdateStatuses = async (tokens: string[], status: "正常" | "禁用") => {
+    if (tokens.length === 0) return;
+    setIsBatchUpdating(true);
+    try {
+      const data = await updateAccountsStatus(tokens, status);
+      setAccounts(data.items);
+      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
+      toast.success(`${status === "正常" ? "启用" : "禁用"} ${data.updated} 个账号`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "更新账号状态失败");
+    } finally {
+      setIsBatchUpdating(false);
+    }
+  };
+
+  const handleAssignGroup = async (groupID: string) => {
+    if (selectedTokens.length === 0) return;
+    setIsBatchUpdating(true);
+    try {
+      const data = await updateAccountsGroup(selectedTokens, groupID);
+      setAccounts(data.items);
+      setGroupMenuOpen(false);
+      toast.success(`已更新 ${data.updated} 个账号的分组`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "批量分组失败");
+    } finally {
+      setIsBatchUpdating(false);
     }
   };
 
@@ -727,51 +911,8 @@ function AccountsPageContent() {
         </div>
       ) : null}
 
-      <section className="mt-4 flex flex-col gap-4 sm:mt-6 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">
-            Account Pool
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight">号池管理</h1>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void loadAccounts()}
-            disabled={showProgress}
-          >
-            <RefreshCw className="size-4" />
-            刷新
-          </Button>
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))}
-            disabled={showProgress || accounts.length === 0}
-          >
-            <RefreshCw className="size-4" />
-            一键刷新所有账号信息和额度
-          </Button>
-          <AccountImportDialog
-            disabled={showProgress}
-            onImported={(items) => {
-              setAccounts(items);
-              setSelectedIds([]);
-              setPage(1);
-            }}
-          />
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => downloadTokens(accounts)}
-            disabled={accounts.length === 0}
-          >
-            <Download className="size-4" />
-            导出全部 Token
-          </Button>
-        </div>
+      <section className="mt-4 border-b border-border pb-4 sm:mt-5">
+        <h1 className="text-xl font-semibold">号池管理</h1>
       </section>
 
       {refreshProgress ? (
@@ -807,10 +948,20 @@ function AccountsPageContent() {
           <DialogHeader className="gap-2">
             <DialogTitle>编辑账户</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              手动修改账号状态。
+              修改账号状态和上游出口。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">账号组</label>
+              <Select value={editAccountGroupID || "none"} onValueChange={(value) => setEditAccountGroupID(value === "none" ? "" : value)}>
+                <SelectTrigger className="h-11 rounded-md border-stone-200 bg-white"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">未分组</SelectItem>
+                  {accountGroups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name}{!group.enabled ? "（已停用）" : ""}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">状态</label>
               <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
@@ -827,6 +978,27 @@ function AccountsPageContent() {
                     ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">上游出口</label>
+              <Select value={editProxyMode} onValueChange={(value) => setEditProxyMode(value as typeof editProxyMode)}>
+                <SelectTrigger className="h-11 rounded-md border-stone-200 bg-white"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="inherit">继承账号组或默认出口</SelectItem>
+                  <SelectItem value="direct">直连</SelectItem>
+                  <SelectItem value="group">代理组</SelectItem>
+                  <SelectItem value="custom">自定义代理</SelectItem>
+                </SelectContent>
+              </Select>
+              {editProxyMode === "group" ? (
+                <Select value={editProxyGroupID} onValueChange={setEditProxyGroupID}>
+                  <SelectTrigger className="h-11 rounded-md border-stone-200 bg-white"><SelectValue placeholder="选择代理组" /></SelectTrigger>
+                  <SelectContent>
+                    {proxyGroups.map((group) => <SelectItem key={group.id} value={group.id} disabled={!group.enabled || !group.nodes.some((node) => node.enabled)}>{group.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              {editProxyMode === "custom" ? <Input value={editProxyURL} onChange={(event) => setEditProxyURL(event.target.value)} placeholder="http://user:pass@host:port" autoComplete="off" /> : null}
             </div>
           </div>
           <DialogFooter className="pt-2">
@@ -850,39 +1022,29 @@ function AccountsPageContent() {
         </DialogContent>
       </Dialog>
 
-      <section className="mt-3 space-y-3 lg:mt-2">
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <section className="border-b border-border py-3" aria-label="账号概览">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 xl:grid-cols-6">
           {metricCards.map((item) => {
             const Icon = item.icon;
             const value = summary[item.key];
             return (
-              <Card key={item.key} className="rounded-xl border border-border bg-card shadow-sm transition hover:border-primary/30 hover:shadow-md">
-                <CardContent className="p-4">
-                  <div className="mb-3 flex items-start justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">{item.label}</span>
-                    <Icon className={cn("size-4", item.color)} />
-                  </div>
-                  <div className={cn("font-data tabular-nums text-[1.85rem] font-semibold tracking-tight", item.color)}>
-                    {typeof value === "number" ? formatCompact(value) : value}
-                  </div>
-                </CardContent>
-              </Card>
+              <div key={item.key} className="min-w-0 border-l border-border pl-3 sm:pl-4">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Icon className={cn("size-3.5 shrink-0", item.color)} />
+                  <span>{item.label}</span>
+                </div>
+                <div className={cn("mt-1 font-data text-xl font-semibold tabular-nums", item.color)}>
+                  {typeof value === "number" ? formatCompact(value) : value}
+                </div>
+              </div>
             );
           })}
         </div>
       </section>
 
-      <section className="mt-8 space-y-4 sm:mt-10">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">账户列表</h2>
-            <Badge variant="secondary" className="rounded-lg bg-stone-200 px-2 py-0.5 text-stone-700">
-              {filteredAccounts.length}
-            </Badge>
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-            <div className="relative min-w-[200px] flex-1 sm:flex-initial">
+      <section className="pt-4">
+        <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[220px] flex-1 sm:max-w-sm">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-stone-400" />
               <Input
                 value={query}
@@ -890,8 +1052,9 @@ function AccountsPageContent() {
                   setQuery(event.target.value);
                   setPage(1);
                 }}
-                placeholder="搜索邮箱"
-                className="h-10 rounded-xl border-stone-200 bg-white/85 pl-10"
+                placeholder="搜索邮箱、ID、Token 或套餐"
+                aria-label="搜索账号"
+                className="h-9 rounded-md border-border bg-background pl-10"
               />
             </div>
             <Select
@@ -901,7 +1064,7 @@ function AccountsPageContent() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 sm:w-[140px]">
+              <SelectTrigger aria-label="筛选账号套餐" className="h-9 w-[130px] rounded-md border-border bg-background">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -919,7 +1082,7 @@ function AccountsPageContent() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 sm:w-[140px]">
+              <SelectTrigger aria-label="筛选账号状态" className="h-9 w-[130px] rounded-md border-border bg-background">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -930,108 +1093,161 @@ function AccountsPageContent() {
                 ))}
               </SelectContent>
             </Select>
-            <div className="inline-flex h-10 shrink-0 items-center rounded-xl border border-border bg-secondary/40 p-1">
+            <Select
+              value={trialFilter}
+              onValueChange={(value) => {
+                setTrialFilter(value as (typeof trialFilterOptions)[number]["value"]);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger aria-label="筛选优惠资格" className="h-9 w-[145px] rounded-md border-border bg-background">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {trialFilterOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={groupFilter} onValueChange={(value) => { setGroupFilter(value); setPage(1); }}>
+              <SelectTrigger aria-label="筛选账号组" className="h-9 w-[140px] rounded-md border-border bg-background"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部账号组</SelectItem>
+                <SelectItem value="none">未分组</SelectItem>
+                {accountGroups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <div className="inline-flex h-9 shrink-0 items-center rounded-md border border-border bg-secondary/40 p-1 sm:ml-auto">
               <button
                 type="button"
                 aria-pressed={viewMode === "grid"}
+                aria-label="卡片视图"
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition",
+                  "inline-flex size-7 cursor-pointer items-center justify-center rounded-sm transition",
                   viewMode === "grid"
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground",
                 )}
-                onClick={() => setViewMode("grid")}
+                onClick={() => {
+                  setViewMode("grid");
+                  window.localStorage.setItem("accounts.viewMode", "grid");
+                }}
                 title="卡片视图"
               >
-                <LayoutGrid className="size-3.5" />
-                卡片
+                <LayoutGrid className="size-4" />
               </button>
               <button
                 type="button"
                 aria-pressed={viewMode === "list"}
+                aria-label="列表视图"
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition",
+                  "inline-flex size-7 cursor-pointer items-center justify-center rounded-sm transition",
                   viewMode === "list"
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground",
                 )}
-                onClick={() => setViewMode("list")}
+                onClick={() => {
+                  setViewMode("list");
+                  window.localStorage.setItem("accounts.viewMode", "list");
+                }}
                 title="列表视图"
               >
-                <Rows3 className="size-3.5" />
-                列表
+                <Rows3 className="size-4" />
               </button>
             </div>
-          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border py-3">
+          <AccountImportDialog
+            disabled={showProgress}
+            onImported={(items) => {
+              setAccounts(items);
+              setSelectedIds([]);
+              setPage(1);
+            }}
+          />
+          <AccountGroupsDialog groups={accountGroups} proxyGroups={proxyGroups} accounts={accounts} onChanged={async () => { const data = await fetchAccountGroups(); setAccountGroups(data.groups); }} />
+          <Popover open={groupMenuOpen} onOpenChange={setGroupMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="h-9 rounded-md" disabled={selectedTokens.length === 0 || isBatchUpdating}><UsersRound className="size-4" />分组选中</Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-48 rounded-md border-border p-1">
+              <button type="button" onClick={() => void handleAssignGroup("")} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary">移出账号组</button>
+              {accountGroups.map((group) => <button key={group.id} type="button" onClick={() => void handleAssignGroup(group.id)} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary">{group.name}{!group.enabled ? "（已停用）" : ""}</button>)}
+            </PopoverContent>
+          </Popover>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="h-9 rounded-md" disabled={accounts.length === 0}>
+                <Download className="size-4" />
+                导出
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 rounded-md border-border p-1">
+              {([
+                ["选中账号 · Token TXT", selectedAccounts, "txt"],
+                ["选中账号 · 完整 JSON", selectedAccounts, "json"],
+                ["全部账号 · Token TXT", accounts, "txt"],
+                ["全部账号 · 完整 JSON", accounts, "json"],
+              ] as const).map(([label, items, format]) => (
+                <button key={label} type="button" disabled={items.length === 0} onClick={() => downloadAccounts(items, format)} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary disabled:opacity-40">
+                  {label}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+          <Button variant="outline" className="h-9 rounded-md" onClick={() => void handleRefreshAccounts(selectedTokens)} disabled={selectedTokens.length === 0 || isRefreshing}>
+            {isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            刷新选中
+          </Button>
+          <Button variant="outline" className="h-9 rounded-md" onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))} disabled={showProgress || accounts.length === 0}>
+            <RefreshCw className="size-4" />
+            刷新全部
+          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="h-9 rounded-md" disabled={accounts.length === 0}>
+                <MoreHorizontal className="size-4" />
+                批量处理
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-56 rounded-md border-border p-1">
+              <button type="button" onClick={() => setSelectedIds(accounts.map((item) => item.access_token))} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary">全选账号</button>
+              <button type="button" onClick={() => setSelectedIds((prev) => Array.from(new Set([...prev, ...filteredAccounts.map((item) => item.access_token)])))} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary">全选筛选结果</button>
+              <button type="button" disabled={selectedIds.length === 0} onClick={() => setSelectedIds([])} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary disabled:opacity-40">取消选择</button>
+              <div className="my-1 border-t border-border" />
+              <button type="button" disabled={selectedTokens.length === 0 || isBatchUpdating} onClick={() => void handleUpdateStatuses(selectedTokens, "正常")} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary disabled:opacity-40">批量启用</button>
+              <button type="button" disabled={selectedTokens.length === 0 || isBatchUpdating} onClick={() => void handleUpdateStatuses(selectedTokens, "禁用")} className="w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-secondary disabled:opacity-40">批量禁用</button>
+              <button type="button" disabled={abnormalTokens.length === 0 || isDeleting} onClick={() => void handleDeleteTokens(abnormalTokens)} className="w-full rounded-sm px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-40">移除异常账号</button>
+              <button type="button" disabled={selectedTokens.length === 0 || isDeleting} onClick={() => void handleDeleteTokens(selectedTokens)} className="w-full rounded-sm px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-40">删除选中</button>
+            </PopoverContent>
+          </Popover>
+          {selectedIds.length > 0 ? <span className="text-xs font-medium text-muted-foreground">已选 {selectedIds.length}</span> : null}
+          {viewMode === "grid" ? (
+            <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground sm:ml-auto">
+              <Checkbox checked={allCurrentSelected} onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))} />
+              全选本页
+            </label>
+          ) : null}
+          <Button variant="ghost" size="icon" className="ml-auto size-9 rounded-md" onClick={() => void loadAccounts()} disabled={showProgress} title="刷新列表" aria-label="刷新列表">
+            <RefreshCw className="size-4" />
+          </Button>
         </div>
 
         {isLoading && accounts.length === 0 ? (
-          <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-            <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-              <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
-                <LoaderCircle className="size-5 animate-spin" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-stone-700">正在加载账户</p>
-                <p className="text-sm text-stone-500">从后端同步账号列表和状态。</p>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="flex items-center justify-center gap-2 border-t border-border py-14 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" />
+            正在加载账户
+          </div>
         ) : null}
 
-        <Card
+        <div
           className={cn(
-            "overflow-hidden rounded-2xl border-white/80 bg-white/90 shadow-sm",
+            "border-t border-border",
             isLoading && accounts.length === 0 ? "hidden" : "",
           )}
         >
-          <CardContent className="space-y-0 p-0">
-            <div className="flex flex-col gap-3 border-b border-stone-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-wrap items-center gap-2 text-sm text-stone-500">
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
-                  onClick={() => void handleRefreshAccounts(selectedTokens)}
-                  disabled={selectedTokens.length === 0 || isRefreshing}
-                >
-                  {isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  刷新选中账号信息和额度
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => void handleDeleteTokens(abnormalTokens, true)}
-                  disabled={abnormalTokens.length === 0 || isDeleting}
-                >
-                  {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                  移除异常账号
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => void handleDeleteTokens(selectedTokens)}
-                  disabled={selectedTokens.length === 0 || isDeleting}
-                >
-                  {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                  删除所选
-                </Button>
-                {selectedIds.length > 0 ? (
-                  <span className="rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
-                    已选择 {selectedIds.length} 项
-                  </span>
-                ) : null}
-                {viewMode === "grid" ? (
-                  <label className="ml-auto inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground">
-                    <Checkbox
-                      checked={allCurrentSelected}
-                      onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
-                    />
-                    <span>全选当前页</span>
-                  </label>
-                ) : null}
-              </div>
-            </div>
-
+          <div>
             {viewMode === "list" ? (
               <div className="overflow-x-auto">
               <table className="w-full min-w-[920px] text-left">
@@ -1057,9 +1273,6 @@ function AccountsPageContent() {
                 </thead>
                 <tbody>
                   {currentRows.map((account) => {
-                    const status = statusMeta[account.status];
-                    const StatusIcon = status.icon;
-
                     return (
                       <tr
                         key={account.access_token}
@@ -1084,6 +1297,8 @@ function AccountsPageContent() {
                             </span>
                             <button
                               type="button"
+                              title="复制 Token"
+                              aria-label="复制 Token"
                               className="cursor-pointer rounded-md p-1 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                               onClick={() => {
                                 void navigator.clipboard.writeText(account.access_token);
@@ -1093,6 +1308,20 @@ function AccountsPageContent() {
                               <Copy className="size-4" />
                             </button>
                           </div>
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <span>AT 已保存</span>
+                            <span>·</span>
+                            <span className={account.refresh_token ? "text-emerald-700" : ""}>RT {account.refresh_token ? "已保存" : "缺失"}</span>
+                            {account.refresh_token ? (
+                              <button type="button" title="复制 Refresh Token" aria-label="复制 Refresh Token" onClick={() => {
+                                void navigator.clipboard.writeText(account.refresh_token ?? "");
+                                toast.success("Refresh Token 已复制");
+                              }} className="rounded-sm p-0.5 hover:text-foreground">
+                                <Copy className="size-3" />
+                              </button>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-foreground">出口：{accountProxyLabel(account, proxyGroups, accountGroups)}</div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
@@ -1106,6 +1335,7 @@ function AccountsPageContent() {
                               {displayAccountSource(account)}
                             </Badge>
                             {account.is_signup_token ? <Badge variant="outline">注册令牌</Badge> : null}
+                            <TrialBadge account={account} />
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -1124,6 +1354,47 @@ function AccountsPageContent() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="font-data text-[12px] leading-5 text-muted-foreground">{account.email ?? "—"}</div>
+                          {account.password ? (
+                            <button
+                              type="button"
+                              title="复制登录密码"
+                              aria-label="复制登录密码"
+                              onClick={() => void copyPassword(account)}
+                              className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                            >
+                              <Copy className="size-3.5" /> 密码
+                            </button>
+                          ) : null}
+                          {account.mfa_status ? (
+                            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>2FA {account.mfa_status === "enabled" ? "已启用" : account.mfa_status === "pending" ? "待确认" : "失败"}</span>
+                              {account.mfa_secret ? (
+                                <button
+                                  type="button"
+                                  title="复制 2FA 密钥"
+                                  aria-label="复制 2FA 密钥"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(account.mfa_secret!);
+                                    toast.success("2FA 密钥已复制");
+                                  }}
+                                  className="cursor-pointer hover:text-foreground"
+                                >
+                                  <Copy className="size-3.5" />
+                                </button>
+                              ) : null}
+                              {account.mfa_status === "enabled" ? (
+                                <button
+                                  type="button"
+                                  title="复制当前 2FA 验证码"
+                                  aria-label="复制当前 2FA 验证码"
+                                  onClick={() => void copyMFACode(account)}
+                                  className="cursor-pointer hover:text-foreground"
+                                >
+                                  <KeyRound className="size-3.5" />
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-4 py-3">
                           <span className="font-data tabular-nums text-sm font-semibold text-foreground">
@@ -1150,6 +1421,8 @@ function AccountsPageContent() {
                           <div className="flex items-center gap-0.5 text-muted-foreground">
                             <button
                               type="button"
+                              title="编辑账号"
+                              aria-label="编辑账号"
                               className="cursor-pointer rounded-md p-1.5 transition hover:bg-secondary hover:text-foreground"
                               onClick={() => openEditDialog(account)}
                               disabled={isUpdating}
@@ -1158,6 +1431,8 @@ function AccountsPageContent() {
                             </button>
                             <button
                               type="button"
+                              title="刷新账号信息和额度"
+                              aria-label="刷新账号信息和额度"
                               className="cursor-pointer rounded-md p-1.5 transition hover:bg-secondary hover:text-foreground"
                               onClick={() => void handleRefreshAccounts([account.access_token])}
                               disabled={isRefreshing}
@@ -1166,6 +1441,18 @@ function AccountsPageContent() {
                             </button>
                             <button
                               type="button"
+                              title={account.status === "禁用" ? "启用账号" : "禁用账号"}
+                              aria-label={account.status === "禁用" ? "启用账号" : "禁用账号"}
+                              className="cursor-pointer rounded-md p-1.5 transition hover:bg-secondary hover:text-foreground"
+                              onClick={() => void handleUpdateStatuses([account.access_token], account.status === "禁用" ? "正常" : "禁用")}
+                              disabled={isBatchUpdating}
+                            >
+                              {account.status === "禁用" ? <CheckCircle2 className="size-4" /> : <Ban className="size-4" />}
+                            </button>
+                            <button
+                              type="button"
+                              title="删除账号"
+                              aria-label="删除账号"
                               className="cursor-pointer rounded-md p-1.5 transition hover:bg-rose-50 hover:text-rose-500"
                               onClick={() => void handleDeleteTokens([account.access_token])}
                               disabled={isDeleting}
@@ -1186,6 +1473,7 @@ function AccountsPageContent() {
                   <AccountCard
                     key={account.access_token}
                     account={account}
+                    proxyLabel={accountProxyLabel(account, proxyGroups, accountGroups)}
                     selected={selectedIds.includes(account.access_token)}
                     onSelectChange={(checked) => {
                       setSelectedIds((prev) =>
@@ -1196,11 +1484,19 @@ function AccountsPageContent() {
                     }}
                     onEdit={() => openEditDialog(account)}
                     onRefresh={() => void handleRefreshAccounts([account.access_token])}
+                    onToggleStatus={() => void handleUpdateStatuses([account.access_token], account.status === "禁用" ? "正常" : "禁用")}
                     onDelete={() => void handleDeleteTokens([account.access_token])}
                     onCopyToken={() => {
                       void navigator.clipboard.writeText(account.access_token);
                       toast.success("token 已复制");
                     }}
+                    onCopyPassword={() => void copyPassword(account)}
+                    onCopyMFA={() => {
+                      if (!account.mfa_secret) return;
+                      void navigator.clipboard.writeText(account.mfa_secret);
+                      toast.success("2FA 密钥已复制");
+                    }}
+                    onCopyMFACode={() => void copyMFACode(account)}
                     isRefreshing={isRefreshing}
                     isDeleting={isDeleting}
                     isUpdating={isUpdating}
@@ -1290,8 +1586,8 @@ function AccountsPageContent() {
                 </Button>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </section>
     </>
   );

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,8 +12,9 @@ import (
 )
 
 type logService struct {
-	mu   sync.Mutex
-	path string
+	mu    sync.Mutex
+	path  string
+	store *Store
 }
 
 func newLogService(dataDir string) *logService {
@@ -30,6 +32,26 @@ func (l *logService) add(typ, summary string, detail map[string]any) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.store != nil {
+		data, err := json.Marshal(item)
+		if err != nil {
+			return
+		}
+		timeValue := strAny(item["time"], "")
+		day := ""
+		if len(timeValue) >= 10 {
+			day = timeValue[:10]
+		}
+		outcome := strAny(detail["status"], "")
+		endpoint := strAny(detail["endpoint"], "")
+		model := strAny(detail["model"], "")
+		search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], "")}, " "))
+		stmt := "INSERT INTO app_logs (id, payload, event_time, event_day, log_type, outcome, endpoint, model, search_text) VALUES (" + l.store.bind(1) + ", " + l.store.bind(2) + ", " + l.store.bind(3) + ", " + l.store.bind(4) + ", " + l.store.bind(5) + ", " + l.store.bind(6) + ", " + l.store.bind(7) + ", " + l.store.bind(8) + ", " + l.store.bind(9) + ")"
+		if _, err := l.store.db.Exec(stmt, item["id"], string(data), timeValue, day, typ, outcome, endpoint, model, search); err != nil {
+			log.Printf("storage append log: %v", err)
+		}
+		return
+	}
 	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
@@ -117,6 +139,13 @@ func (l *logService) listFiltered(typ, startDate, endDate, status, endpoint, mod
 	if limit <= 0 {
 		limit = 200
 	}
+	if l.store != nil {
+		items, err := l.store.queryLogs(logQuery{typ: typ, startDate: startDate, endDate: endDate, status: status, endpoint: endpoint, model: model, search: query}, limit)
+		if err != nil {
+			log.Printf("storage list logs: %v", err)
+		}
+		return items
+	}
 	b, err := os.ReadFile(l.path)
 	if err != nil {
 		return []map[string]any{}
@@ -185,6 +214,19 @@ func (l *logService) delete(ids []string) int {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.store != nil {
+		removed := 0
+		for _, id := range ids {
+			result, err := l.store.db.Exec("DELETE FROM app_logs WHERE id = "+l.store.bind(1), id)
+			if err != nil {
+				log.Printf("storage delete log: %v", err)
+				continue
+			}
+			n, _ := result.RowsAffected()
+			removed += int(n)
+		}
+		return removed
+	}
 	b, err := os.ReadFile(l.path)
 	if err != nil {
 		return 0

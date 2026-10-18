@@ -25,6 +25,13 @@ func run() error {
 		return err
 	}
 	defer app.CloseSentinelSolvers()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.ShutdownImageTasks(shutdownCtx); err != nil {
+			log.Printf("image task shutdown: %v", err)
+		}
+	}()
 	addr := os.Getenv("CHATGPT2API_ADDR")
 	if addr == "" {
 		addr = ":3000"

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -144,7 +146,7 @@ func (s *Server) markAccountSuccess(token string, image bool) {
 }
 
 func (s *Server) markAccountFailure(token string, err error, image bool, model string) {
-	if token == "" {
+	if token == "" || isProxyConnectionFailure(err) || isImageDeliveryFailure(err) || isImageTextReplyFailure(err) || errors.Is(err, errNoImageGenerated) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
 	now := nowISO()

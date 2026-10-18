@@ -3,6 +3,7 @@ package app
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -73,16 +74,27 @@ func (s *Server) requireIdentity(w http.ResponseWriter, r *http.Request) (*Ident
 	if token == s.cfg.AuthKey {
 		return &Identity{ID: "admin", Name: "管理员", Role: "admin", AccountTier: "premium", CanUsePaidImageAccounts: true, CanUseHighResolution: true}, true
 	}
-	keys := s.store.LoadAuthKeys()
+	keys, err := s.store.LoadAuthKeysWithError()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "读取用户密钥失败")
+		return nil, false
+	}
 	h := hashKey(token)
-	for i, k := range keys {
+	for _, k := range keys {
 		if !k.Enabled {
 			continue
 		}
 		if k.KeyHash != "" && subtle.ConstantTimeCompare([]byte(k.KeyHash), []byte(h)) == 1 {
 			now := nowISO()
-			keys[i].LastUsedAt = &now
-			_ = s.store.SaveAuthKeys(keys)
+			_ = s.store.UpdateAuthKeys(func(current []UserKey) []UserKey {
+				for j := range current {
+					if current[j].ID == k.ID {
+						current[j].LastUsedAt = &now
+						break
+					}
+				}
+				return current
+			})
 			prem := k.AccountTier == "premium"
 			return &Identity{ID: k.ID, Name: k.Name, Role: k.Role, AccountTier: k.AccountTier, CanUsePaidImageAccounts: prem || k.Role == "admin", CanUseHighResolution: prem || k.Role == "admin"}, true
 		}
@@ -196,9 +208,13 @@ func (s *Server) handleAuthUsers(w http.ResponseWriter, r *http.Request) {
 			tier = "free"
 		}
 		k := UserKey{ID: randID(6), Name: strings.TrimSpace(strAny(body["name"], "普通用户")), Role: role, KeyHash: hashKey(raw), Key: raw, AccountTier: tier, Enabled: true, CreatedAt: nowISO(), ImageDailyQuota: intAny(body["image_daily_quota"], 0), ImageDailyUnlimited: boolAny(body["image_daily_unlimited"], true), ImageMonthlyQuota: intAny(body["image_monthly_quota"], 0), ImageMonthlyUnlimited: boolAny(body["image_monthly_unlimited"], true), ImageTotalQuota: intAny(body["image_total_quota"], 0), ImageTotalUnlimited: boolAny(body["image_total_unlimited"], false), ChatDailyQuota: intAny(body["chat_daily_quota"], 0), ChatDailyUnlimited: boolAny(body["chat_daily_unlimited"], true), ChatMonthlyQuota: intAny(body["chat_monthly_quota"], 0), ChatMonthlyUnlimited: boolAny(body["chat_monthly_unlimited"], true), ChatTotalQuota: intAny(body["chat_total_quota"], 0), ChatTotalUnlimited: boolAny(body["chat_total_unlimited"], true), ImageDailyResetAt: todayKey(), ImageMonthlyResetAt: monthKey(), ChatDailyResetAt: todayKey(), ChatMonthlyResetAt: monthKey()}
+		if err := s.store.UpdateAuthKeys(func(keys []UserKey) []UserKey {
+			return append(keys, k)
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存用户密钥失败: "+err.Error())
+			return
+		}
 		keys := s.store.LoadAuthKeys()
-		keys = append(keys, k)
-		_ = s.store.SaveAuthKeys(keys)
 		items := []map[string]any{}
 		for _, it := range keys {
 			if it.Role == "user" {
@@ -247,44 +263,86 @@ func (s *Server) handleAuthUserID(w http.ResponseWriter, r *http.Request) {
 				raw = v
 			}
 		}
-		keys[idx].Key = raw
-		keys[idx].KeyHash = hashKey(raw)
-		_ = s.store.SaveAuthKeys(keys)
-		writeJSON(w, 200, map[string]any{"item": publicKey(keys[idx]), "key": raw, "items": s.publicUserKeys()})
+		var updated UserKey
+		if err := s.store.UpdateAuthKeys(func(current []UserKey) []UserKey {
+			for i := range current {
+				if current[i].ID == id && current[i].Role == "user" {
+					current[i].Key = raw
+					current[i].KeyHash = hashKey(raw)
+					updated = current[i]
+					break
+				}
+			}
+			return current
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "重置用户密钥失败: "+err.Error())
+			return
+		}
+		if updated.ID == "" {
+			writeErr(w, http.StatusNotFound, "这条用户密钥不存在，可能已经被删除")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"item": publicKey(updated), "key": raw, "items": s.publicUserKeys()})
 		return
 	}
 	switch r.Method {
 	case http.MethodDelete:
-		keys = append(keys[:idx], keys[idx+1:]...)
-		_ = s.store.SaveAuthKeys(keys)
+		if err := s.store.UpdateAuthKeys(func(current []UserKey) []UserKey {
+			for i := range current {
+				if current[i].ID == id && current[i].Role == "user" {
+					return append(current[:i], current[i+1:]...)
+				}
+			}
+			return current
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "删除用户密钥失败: "+err.Error())
+			return
+		}
 		writeJSON(w, 200, map[string]any{"items": s.publicUserKeys()})
 	case http.MethodPost:
 		var b map[string]any
 		if !readBody(w, r, &b) {
 			return
 		}
-		k := keys[idx]
-		if v, ok := b["name"]; ok {
-			k.Name = strAny(v, k.Name)
-		}
-		if v, ok := b["enabled"]; ok {
-			k.Enabled = boolAny(v, k.Enabled)
-		}
-		if v := strings.TrimSpace(strAny(b["key"], "")); v != "" {
-			k.Key = v
-			k.KeyHash = hashKey(v)
-		}
-		if v, ok := b["account_tier"]; ok {
-			t := strings.ToLower(strAny(v, "free"))
-			if t != "premium" {
-				t = "free"
+		var updated UserKey
+		if err := s.store.UpdateAuthKeys(func(current []UserKey) []UserKey {
+			for i := range current {
+				if current[i].ID != id || current[i].Role != "user" {
+					continue
+				}
+				k := current[i]
+				if v, ok := b["name"]; ok {
+					k.Name = strAny(v, k.Name)
+				}
+				if v, ok := b["enabled"]; ok {
+					k.Enabled = boolAny(v, k.Enabled)
+				}
+				if v := strings.TrimSpace(strAny(b["key"], "")); v != "" {
+					k.Key = v
+					k.KeyHash = hashKey(v)
+				}
+				if v, ok := b["account_tier"]; ok {
+					t := strings.ToLower(strAny(v, "free"))
+					if t != "premium" {
+						t = "free"
+					}
+					k.AccountTier = t
+				}
+				applyQuotaUpdate(&k, b)
+				current[i] = k
+				updated = k
+				break
 			}
-			k.AccountTier = t
+			return current
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "更新用户密钥失败: "+err.Error())
+			return
 		}
-		applyQuotaUpdate(&k, b)
-		keys[idx] = k
-		_ = s.store.SaveAuthKeys(keys)
-		writeJSON(w, 200, map[string]any{"item": publicKey(k), "items": s.publicUserKeys()})
+		if updated.ID == "" {
+			writeErr(w, http.StatusNotFound, "这条用户密钥不存在，可能已经被删除")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"item": publicKey(updated), "items": s.publicUserKeys()})
 	default:
 		writeErr(w, 405, "method not allowed")
 	}
@@ -377,7 +435,7 @@ func (s *Server) consumeQuota(id string, n int, image bool) bool {
 		n = 1
 	}
 	consumed := false
-	_ = s.store.UpdateAuthKeys(func(keys []UserKey) []UserKey {
+	err := s.store.UpdateAuthKeys(func(keys []UserKey) []UserKey {
 		for i, k := range keys {
 			if k.ID != id {
 				continue
@@ -404,6 +462,10 @@ func (s *Server) consumeQuota(id string, n int, image bool) bool {
 		}
 		return keys
 	})
+	if err != nil {
+		log.Printf("storage consume quota: %v", err)
+		return false
+	}
 	return consumed
 }
 func (s *Server) refundImage(id *Identity, n int) {
@@ -419,7 +481,7 @@ func (s *Server) refundChat(id *Identity, n int) {
 	s.refundQuota(id.ID, n, false)
 }
 func (s *Server) refundQuota(id string, n int, image bool) {
-	_ = s.store.UpdateAuthKeys(func(keys []UserKey) []UserKey {
+	if err := s.store.UpdateAuthKeys(func(keys []UserKey) []UserKey {
 		for i, k := range keys {
 			if k.ID != id {
 				continue
@@ -437,7 +499,9 @@ func (s *Server) refundQuota(id string, n int, image bool) {
 			return keys
 		}
 		return keys
-	})
+	}); err != nil {
+		log.Printf("storage refund quota: %v", err)
+	}
 }
 func maxInt(a, b int) int {
 	if a > b {

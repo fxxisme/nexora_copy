@@ -69,7 +69,7 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 	if idx < 0 || account.RefreshToken == nil || strings.TrimSpace(*account.RefreshToken) == "" {
 		return Account{}, fmt.Errorf("refresh_token not found")
 	}
-	client, err := NewUpstreamClient("", s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+	client, err := s.newUpstreamClientForAccount(account)
 	if err != nil {
 		return Account{}, err
 	}
@@ -205,7 +205,7 @@ func (s *Server) refreshOAuthAccessToken(ctx context.Context, oldToken string) (
 }
 
 func (s *Server) upstreamClientForTokenWithRefresh(ctx context.Context, token string) (*UpstreamClient, error) {
-	client, err := NewUpstreamClientForAccount(s.accountByToken(token), s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+	client, err := s.newUpstreamClientForAccount(s.accountByToken(token))
 	if err == nil {
 		return client, nil
 	}
@@ -213,5 +213,5 @@ func (s *Server) upstreamClientForTokenWithRefresh(ctx context.Context, token st
 	if refreshErr != nil {
 		return nil, err
 	}
-	return NewUpstreamClientForAccount(s.accountByToken(newToken), s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+	return s.newUpstreamClientForAccount(s.accountByToken(newToken))
 }

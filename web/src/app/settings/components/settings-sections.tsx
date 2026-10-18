@@ -1,16 +1,17 @@
 "use client";
 
-import { LoaderCircle, PlugZap } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, LoaderCircle, PlugZap, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { testProxy, type ProxyTestResult } from "@/lib/api";
+import { deleteProxyGroup, fetchProxyGroups, fetchProxyView, saveProxyDefaults, saveProxyGroup, testProxy, testProxyGroup, type ProxyGroup, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
+import { ProxyNodeImportDialog } from "./proxy-node-import-dialog";
 
 /**
  * 6 个 section 组件集中放这里：
@@ -24,6 +25,8 @@ const INPUT_CLASS = "h-10 rounded-xl border-stone-200 bg-white";
 const LABEL_CLASS = "text-sm text-stone-700";
 const HELP_CLASS = "text-xs text-stone-500";
 const TILE_CLASS = "rounded-xl border border-stone-200 bg-white px-4 py-3";
+const PROXY_STRATEGY_LABELS: Record<ProxyGroup["strategy"], string> = { round_robin: "轮询", request_random: "随机", time_window: "时间窗口" };
+const PROXY_HEALTH_LABELS: Record<ProxyGroup["health"]["state"], string> = { healthy: "可用", unhealthy: "不可用", unknown: "待检测" };
 
 /* ───────────────────────── 账号 ───────────────────────── */
 
@@ -70,6 +73,140 @@ export function NetworkSection() {
   const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
   const config = useSettingsStore((s) => s.config);
   const setProxy = useSettingsStore((s) => s.setProxy);
+  const [groups, setGroups] = useState<ProxyGroup[]>([]);
+  const [selectedGroupID, setSelectedGroupID] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [groupStrategy, setGroupStrategy] = useState<ProxyGroup["strategy"]>("round_robin");
+  const [nodeURLs, setNodeURLs] = useState("");
+  const [nodeLimits, setNodeLimits] = useState<Record<string, string>>({});
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [groupsBusy, setGroupsBusy] = useState(false);
+  const [groupNotice, setGroupNotice] = useState<{ id: string; message: string } | null>(null);
+  const [expandedGroupID, setExpandedGroupID] = useState("");
+  const [testingGroupID, setTestingGroupID] = useState("");
+  const [groupTestResults, setGroupTestResults] = useState<Record<string, Record<string, ProxyTestResult>>>({});
+  const [defaultMode, setDefaultMode] = useState<"direct" | "custom" | "group">("custom");
+  const [defaultGroupID, setDefaultGroupID] = useState("");
+  const [fallbackGroupID, setFallbackGroupID] = useState("");
+  const [defaultsBusy, setDefaultsBusy] = useState(false);
+
+  const loadProxyGroups = async () => {
+    setGroupsLoading(true);
+    try {
+      const data = await fetchProxyGroups();
+      setGroups(data.groups);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "加载代理组失败");
+    } finally {
+      setGroupsLoading(false);
+    }
+  };
+
+  const loadProxyView = async () => {
+    try {
+      const data = await fetchProxyView();
+      setGroups(data.groups);
+      setDefaultMode(data.default_reference.mode);
+      setDefaultGroupID(data.default_reference.group_id || "");
+      setFallbackGroupID(data.fallback_reference?.mode === "group" ? data.fallback_reference.group_id : "");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "加载代理默认配置失败");
+    }
+  };
+
+  useEffect(() => { void loadProxyView(); }, []);
+
+  const editProxyGroup = (group: ProxyGroup) => {
+    setSelectedGroupID(group.id);
+    setGroupName(group.name);
+    setGroupStrategy(group.strategy);
+    setNodeURLs(group.nodes.map((node) => node.url).join("\n"));
+    setNodeLimits(Object.fromEntries(group.nodes.map((node) => [node.url, String(node.image_concurrency_limit)])));
+  };
+
+  const resetProxyGroup = () => {
+    setSelectedGroupID("");
+    setGroupName("");
+    setGroupStrategy("round_robin");
+    setNodeURLs("");
+    setNodeLimits({});
+  };
+
+  const parsedNodeURLs = nodeURLs.split(/\r?\n/).map((url) => url.trim()).filter(Boolean);
+
+  const applyImportedNodes = (nodes: Array<{ url: string; image_concurrency_limit: number }>) => {
+    setNodeURLs((current) => [current.trim(), ...nodes.map((node) => node.url)].filter(Boolean).join("\n"));
+    setNodeLimits((current) => ({
+      ...current,
+      ...Object.fromEntries(nodes.map((node) => [node.url, String(node.image_concurrency_limit)])),
+    }));
+  };
+
+  const handleSaveProxyGroup = async () => {
+    if (!groupName.trim() || parsedNodeURLs.length === 0) { toast.error("请填写代理组名称和至少一个节点"); return; }
+    if (parsedNodeURLs.some((url) => {
+      const value = Number(nodeLimits[url] ?? "0");
+      return !Number.isInteger(value) || value < 0 || value > 10000;
+    })) { toast.error("节点生图并发需为 0 到 10000 的整数"); return; }
+    const existingGroup = groups.find((group) => group.id === selectedGroupID);
+    const existingNodes = existingGroup?.nodes ?? [];
+    setGroupsBusy(true);
+    try {
+      const response = await saveProxyGroup({
+        id: selectedGroupID || undefined,
+        name: groupName.trim(),
+        strategy: groupStrategy,
+        rotation_interval_minutes: existingGroup?.rotation_interval_minutes ?? 0,
+        enabled: existingGroup?.enabled ?? true,
+        notes: existingGroup?.notes ?? "",
+        nodes: parsedNodeURLs.map((url) => {
+          const existing = existingNodes.find((node) => node.url === url);
+          return { id: existing?.id, name: existing?.name, url, enabled: existing?.enabled, image_concurrency_limit: Number(nodeLimits[url] ?? existing?.image_concurrency_limit ?? 0), notes: existing?.notes };
+        }),
+      });
+      await loadProxyGroups();
+      editProxyGroup(response.group);
+      setGroupTestResults((current) => {
+        const next = { ...current };
+        delete next[response.group.id];
+        return next;
+      });
+      toast.success("代理组已保存");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存代理组失败");
+    } finally { setGroupsBusy(false); }
+  };
+
+  const handleTestProxyGroup = async (group: ProxyGroup) => {
+    setGroupsBusy(true);
+    setTestingGroupID(group.id);
+    setExpandedGroupID(group.id);
+    setGroupNotice(null);
+    try {
+      const result = await testProxyGroup({ id: group.id });
+      setGroupTestResults((current) => ({
+        ...current,
+        [group.id]: Object.fromEntries(result.results.filter((item) => item.node_id).map((item) => [item.node_id, item.result])),
+      }));
+      setGroupNotice({ id: group.id, message: result.summary.message });
+      await loadProxyGroups();
+    } catch (error) { toast.error(error instanceof Error ? error.message : "测试代理组失败"); }
+    finally { setGroupsBusy(false); setTestingGroupID(""); }
+  };
+
+  const handleSaveProxyDefaults = async () => {
+    if (defaultMode === "group" && !defaultGroupID) { toast.error("请选择默认代理组"); return; }
+    if (fallbackGroupID && fallbackGroupID === defaultGroupID && defaultMode === "group") { toast.error("备用代理组不能与默认代理组相同"); return; }
+    setDefaultsBusy(true);
+    try {
+      await saveProxyDefaults({
+        default_reference: { mode: defaultMode, group_id: defaultMode === "group" ? defaultGroupID : "", url: defaultMode === "custom" ? String(config?.proxy || "").trim() : "" },
+        fallback_reference: fallbackGroupID ? { mode: "group", group_id: fallbackGroupID, url: "" } : null,
+      });
+      toast.success("默认代理路由已保存");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "保存默认代理失败"); }
+    finally { setDefaultsBusy(false); }
+  };
 
   const handleTestProxy = async () => {
     const candidate = String(config?.proxy || "").trim();
@@ -131,6 +268,126 @@ export function NetworkSection() {
           {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
           测试代理
         </Button>
+      </div>
+      <div className="space-y-3 border-t border-stone-200 pt-5">
+        <div>
+          <h3 className="text-sm font-semibold text-stone-800">请求路由</h3>
+          <p className={HELP_CLASS}>默认组按策略选择节点；默认组没有可用节点时使用备用组。保存后新请求立即使用。</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <select value={defaultMode} onChange={(event) => setDefaultMode(event.target.value as typeof defaultMode)} className="h-10 rounded-xl border border-stone-200 bg-white px-3 text-sm">
+            <option value="custom">使用全局代理地址</option><option value="group">使用代理组</option><option value="direct">直连</option>
+          </select>
+          <select value={defaultGroupID} onChange={(event) => setDefaultGroupID(event.target.value)} disabled={defaultMode !== "group"} className="h-10 rounded-xl border border-stone-200 bg-white px-3 text-sm disabled:opacity-50">
+            <option value="">选择默认代理组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+          </select>
+          <select value={fallbackGroupID} onChange={(event) => setFallbackGroupID(event.target.value)} className="h-10 rounded-xl border border-stone-200 bg-white px-3 text-sm md:col-span-2">
+            <option value="">不使用备用代理组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}（备用）</option>)}
+          </select>
+        </div>
+        <div className="flex justify-end"><Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => void handleSaveProxyDefaults()} disabled={defaultsBusy}><Save className="size-4" />保存请求路由</Button></div>
+      </div>
+      <div className="space-y-4 border-t border-stone-200 pt-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-stone-800">代理节点组</h3>
+            <p className={HELP_CLASS}>节点配置保存在 SQL 数据库，可批量粘贴 URL 并探测连通性。默认请求路由在下方选择。</p>
+          </div>
+          <Button type="button" variant="outline" className="h-8 shrink-0 rounded-lg" onClick={() => void loadProxyGroups()} disabled={groupsLoading}>
+            <RefreshCw className={`size-3.5 ${groupsLoading ? "animate-spin" : ""}`} />刷新
+          </Button>
+        </div>
+        {groups.map((group) => (
+          <div key={group.id} className="rounded-xl border border-stone-200 bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button type="button" className="min-w-0 flex-1 text-left" onClick={() => editProxyGroup(group)}>
+                <span className="block truncate text-sm font-medium text-stone-800">{group.name}</span>
+                <span className="text-xs text-stone-500">{group.nodes.length} 个节点 · {PROXY_STRATEGY_LABELS[group.strategy]} · {PROXY_HEALTH_LABELS[group.health.state]}</span>
+              </button>
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" className="h-8 rounded-lg" disabled={groupsBusy} onClick={() => void handleTestProxyGroup(group)}>
+                  {testingGroupID === group.id ? <LoaderCircle className="size-3.5 animate-spin" /> : <PlugZap className="size-3.5" />}测试
+                </Button>
+                <Button type="button" variant="outline" className="size-8 rounded-lg p-0" aria-label={expandedGroupID === group.id ? "收起节点状态" : "展开节点状态"} aria-expanded={expandedGroupID === group.id} title={expandedGroupID === group.id ? "收起节点状态" : "展开节点状态"} onClick={() => setExpandedGroupID((current) => current === group.id ? "" : group.id)}>
+                  <ChevronDown className={`size-3.5 transition-transform ${expandedGroupID === group.id ? "rotate-180" : ""}`} />
+                </Button>
+                <Button type="button" variant="outline" className="size-8 rounded-lg p-0" aria-label={`删除代理组 ${group.name}`} title="删除代理组" disabled={groupsBusy} onClick={async () => {
+                  if (!window.confirm(`删除代理组“${group.name}”？`)) return;
+                  setGroupsBusy(true);
+                  try {
+                    await deleteProxyGroup(group.id);
+                    if (selectedGroupID === group.id) resetProxyGroup();
+                    if (expandedGroupID === group.id) setExpandedGroupID("");
+                    if (groupNotice?.id === group.id) setGroupNotice(null);
+                    setGroupTestResults((current) => { const next = { ...current }; delete next[group.id]; return next; });
+                    await loadProxyGroups();
+                    toast.success("代理组已删除");
+                  } catch (error) { toast.error(error instanceof Error ? error.message : "删除代理组失败"); }
+                  finally { setGroupsBusy(false); }
+                }}><Trash2 className="size-3.5" /></Button>
+              </div>
+            </div>
+            {expandedGroupID === group.id ? (
+              <div className="mt-3 border-t border-stone-200 pt-2">
+                {groupNotice?.id === group.id ? <p className="mb-2 text-xs text-stone-600" role="status">{groupNotice.message}</p> : null}
+                {group.nodes.map((node) => {
+                  const result = groupTestResults[group.id]?.[node.id];
+                  const testing = testingGroupID === group.id && node.enabled;
+                  const detail = !node.enabled ? "已停用"
+                    : testing ? "检测中"
+                    : result?.ok ? `HTTP ${result.status} · ${result.latency_ms} ms`
+                    : result ? result.error || "检测失败"
+                    : node.health.state === "unhealthy" ? node.health.error || "检测失败"
+                    : node.health.state === "healthy" ? `${node.health.latency_ms ?? 0} ms`
+                    : "待检测";
+                  const tone = testing ? "text-sky-700"
+                    : !node.enabled ? "text-stone-500"
+                    : result ? result.ok ? "text-emerald-700" : "text-rose-700"
+                    : node.health.state === "healthy" ? "text-emerald-700"
+                    : node.health.state === "unhealthy" ? "text-rose-700" : "text-stone-500";
+                  return (
+                    <div key={node.id} className="grid gap-1 border-t border-stone-100 py-2 text-xs first:border-t-0 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:gap-3">
+                      <div className="min-w-0"><span className="block truncate font-medium text-stone-700" title={node.name}>{node.name}</span><span className="font-mono text-stone-400">{node.id}</span></div>
+                      <span className={`min-w-0 break-all sm:text-right ${tone}`}>{detail}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        ))}
+        <div className="grid gap-3 md:grid-cols-2">
+          <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="代理组名称" className={INPUT_CLASS} />
+          <select value={groupStrategy} onChange={(event) => setGroupStrategy(event.target.value as ProxyGroup["strategy"])} className="h-10 rounded-xl border border-stone-200 bg-white px-3 text-sm">
+            <option value="round_robin">轮询</option><option value="request_random">每请求随机</option><option value="time_window">时间窗口</option>
+          </select>
+          <Textarea value={nodeURLs} onChange={(event) => setNodeURLs(event.target.value)} placeholder={'每行一个代理 URL\nhttp://127.0.0.1:7890\nsocks5h://127.0.0.1:1080'} className="min-h-24 rounded-xl border-stone-200 bg-white font-mono text-xs md:col-span-2" />
+        </div>
+        <div className="flex justify-end"><ProxyNodeImportDialog existingURLs={parsedNodeURLs} onApply={applyImportedNodes} /></div>
+        {parsedNodeURLs.length > 0 ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3 text-xs text-stone-500">
+              <span>节点</span><span>生图并发上限</span>
+            </div>
+            {parsedNodeURLs.map((url, index) => (
+              <div key={`${url}-${index}`} className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-3">
+                <span className="truncate font-mono text-xs text-stone-700" title={url}>{url}</span>
+                <Input
+                  type="number" min={0} max={10000} step={1}
+                  aria-label={`${url} 生图并发上限`}
+                  value={nodeLimits[url] ?? "0"}
+                  onChange={(event) => setNodeLimits((current) => ({ ...current, [url]: event.target.value }))}
+                  className={INPUT_CLASS}
+                />
+              </div>
+            ))}
+            <p className={HELP_CLASS}>0 表示不限制；满额时优先使用组内其他节点。</p>
+          </div>
+        ) : null}
+        <div className="flex justify-between">
+          <Button type="button" variant="ghost" className="h-9 rounded-xl" onClick={resetProxyGroup}><Plus className="size-4" />新建代理组</Button>
+          <Button type="button" className="h-9 rounded-xl bg-stone-950 text-white" onClick={() => void handleSaveProxyGroup()} disabled={groupsBusy}><Save className="size-4" />{groupsBusy ? "保存中…" : selectedGroupID ? "保存代理组" : "创建代理组"}</Button>
+        </div>
       </div>
     </div>
   );

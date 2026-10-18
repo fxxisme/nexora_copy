@@ -1,5 +1,5 @@
 "use client";
-import { ArrowUp, Check, ChevronDown, CornerDownRight, ImagePlus, Infinity as InfinityIcon, X } from "lucide-react";
+import { ArrowUp, BookOpen, Check, ChevronDown, CornerDownRight, ImagePlus, Infinity as InfinityIcon, X } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -62,6 +62,7 @@ type ImageComposerProps = {
   onImageResolutionChange: (value: string) => void;
   onSubmit: () => void | Promise<void>;
   onPickReferenceImage: () => void;
+  onOpenPromptLibrary: () => void;
   onReferenceImageChange: (files: File[]) => void | Promise<void>;
   onRemoveReferenceImage: (index: number) => void;
 };
@@ -85,6 +86,7 @@ export function ImageComposer({
   onImageResolutionChange,
   onSubmit,
   onPickReferenceImage,
+  onOpenPromptLibrary,
   onReferenceImageChange,
   onRemoveReferenceImage,
 }: ImageComposerProps) {
@@ -383,6 +385,14 @@ export function ImageComposer({
                   >
                     <ImagePlus className="size-3.5 sm:size-4" strokeWidth={2} />
                     <span>{referenceImages.length > 0 ? "添加" : "上传"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-stone-100 px-3 text-[12px] font-medium text-stone-700 transition hover:bg-stone-200 sm:h-10 sm:px-4 sm:text-[13px]"
+                    onClick={onOpenPromptLibrary}
+                  >
+                    <BookOpen className="size-3.5 sm:size-4" />
+                    <span>提示词库</span>
                   </button>
                   <span className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full bg-stone-100 px-3 text-[12px] font-medium text-stone-500 sm:h-10 sm:px-3.5 sm:text-[13px]">
                     <span className="hidden sm:inline">剩余</span>

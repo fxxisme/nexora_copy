@@ -16,6 +16,10 @@ import (
 )
 
 func (s *Server) saveImage(r *http.Request, data []byte) (string, string, error) {
+	return s.saveImageWithBaseURL(s.baseURL(r), data)
+}
+
+func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, string, error) {
 	s.maybeCleanupOldImages()
 	sum := md5.Sum(data)
 	relDir := filepath.Join(time.Now().Format("2006"), time.Now().Format("01"), time.Now().Format("02"))
@@ -28,7 +32,7 @@ func (s *Server) saveImage(r *http.Request, data []byte) (string, string, error)
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return "", "", err
 	}
-	return rel, s.baseURL(r) + "/images/" + rel, nil
+	return rel, baseURL + "/images/" + rel, nil
 }
 func (s *Server) recordOwner(id *Identity, rel string) {
 	if id == nil {

@@ -51,8 +51,39 @@ func (s *Server) generateImageWithPool(ctx context.Context, prompt, model, size,
 		traceLogf(ctx, "│  ├─ selected image account %s", accountLabel(actualAccount))
 		excluded[poolToken] = true
 		excluded[token] = true
-		items, err := client.GenerateImage(ctx, prompt, model, size, resolution, refs, s.imageGenerationOptions())
+		items, client, err := s.generateImageWithReservedEgress(ctx, client, actualAccount, prompt, model, size, resolution, refs)
+		attemptedRoutes := map[string]bool{}
+		if client != nil {
+			attemptedRoutes[client.proxyRoute.URL] = true
+		}
+		for canRetryImageProxyPreflight(ctx, client, err, model, resolution) {
+			sibling, siblingErr := s.newGroupSiblingUpstreamClientForAccount(actualAccount, client.proxyRoute, attemptedRoutes)
+			if siblingErr != nil {
+				traceLogf(ctx, "│  ├─ image group sibling unavailable: %v", siblingErr)
+				break
+			}
+			if sibling == nil {
+				break
+			}
+			traceLogf(ctx, "│  ├─ retry image preflight with group sibling")
+			items, client, err = s.generateImageWithReservedEgressExcluding(ctx, sibling, actualAccount, prompt, model, size, resolution, refs, attemptedRoutes)
+			if client != nil {
+				attemptedRoutes[client.proxyRoute.URL] = true
+			}
+		}
+		if shouldRetryImageWithFallback(ctx, actualAccount, client, err, model, resolution) {
+			fallback, fallbackErr := s.newFallbackUpstreamClientForAccount(actualAccount, client.proxyRoute)
+			if fallbackErr != nil {
+				traceLogf(ctx, "│  ├─ image fallback unavailable: %v", fallbackErr)
+			} else if fallback != nil {
+				traceLogf(ctx, "│  ├─ retry image preflight with fallback outlet")
+				items, _, err = s.generateImageWithReservedEgress(ctx, fallback, actualAccount, prompt, model, size, resolution, refs)
+			}
+		}
 		s.accountPool.releaseToken(poolToken)
+		if err == nil && len(items) == 0 {
+			err = errNoImageGenerated
+		}
 		if err == nil {
 			traceLogf(ctx, "└─ image account attempt %d success images=%d", attempt+1, len(items))
 			s.markAccountSuccess(token, true)
@@ -70,6 +101,35 @@ func (s *Server) generateImageWithPool(ctx context.Context, prompt, model, size,
 		lastErr = errors.New("no available image quota")
 	}
 	return nil, lastErr
+}
+
+func (s *Server) generateImageWithReservedEgress(ctx context.Context, client *UpstreamClient, account Account, prompt, model, size, resolution string, refs [][]byte) ([]upstreamImageResult, *UpstreamClient, error) {
+	return s.generateImageWithReservedEgressExcluding(ctx, client, account, prompt, model, size, resolution, refs, nil)
+}
+
+func (s *Server) generateImageWithReservedEgressExcluding(ctx context.Context, client *UpstreamClient, account Account, prompt, model, size, resolution string, refs [][]byte, excluded map[string]bool) ([]upstreamImageResult, *UpstreamClient, error) {
+	route, release, err := s.acquireImageProxyRouteExcluding(ctx, client.proxyRoute, excluded)
+	if err != nil {
+		return nil, client, err
+	}
+	defer release()
+	if route != client.proxyRoute {
+		client, err = s.newUpstreamClientForRoute(account, route)
+		if err != nil {
+			return nil, client, &proxyConnectionError{cause: redactProxyTransportError(err, route.URL)}
+		}
+	}
+	items, err := client.GenerateImage(ctx, prompt, model, size, resolution, refs, s.imageGenerationOptions())
+	return items, client, err
+}
+
+func shouldRetryImageWithFallback(ctx context.Context, account Account, client *UpstreamClient, err error, model, resolution string) bool {
+	return account.Proxy == "" && client != nil && !client.proxyRoute.Bound && canRetryImageProxyPreflight(ctx, client, err, model, resolution)
+}
+
+func canRetryImageProxyPreflight(ctx context.Context, client *UpstreamClient, err error, model, resolution string) bool {
+	return err != nil && ctx.Err() == nil && client != nil && client.proxyRoute.URL != "" &&
+		!isCodexImageRequest(model, resolution) && !client.imageConversationStarted && isProxyConnectionFailure(err)
 }
 
 func (s *Server) generateImagesWithPool(ctx context.Context, prompt, model, size, resolution string, refs [][]byte, n int) ([]upstreamImageResult, error) {
@@ -128,8 +188,17 @@ func (s *Server) generateImagesWithPool(ctx context.Context, prompt, model, size
 }
 
 func shouldRetryImageAccount(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	if isImageDeliveryFailure(err) {
+		return true
+	}
+	if isImageTextReplyFailure(err) {
+		return false
+	}
+	if errors.Is(err, errNoImageGenerated) {
+		return true
 	}
 	return isRateLimitErrorText(err) || isInvalidTokenErrorText(err) || isUpstreamBlockErrorText(err) || isTurnstileRequirementErrorText(err) || isRetryableBootstrapError(err) || isTemporaryUpstreamErrorText(err)
 }

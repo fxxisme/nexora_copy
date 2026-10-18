@@ -48,8 +48,8 @@ export default function RootLayout({
         <Toaster position="top-center" richColors offset={48} />
         <RouteProgress />
         <TopNav />
-        <main className="h-screen overflow-x-hidden overflow-y-auto px-4 pt-12 pb-2 text-foreground [scrollbar-gutter:stable_both-edges] sm:px-6 sm:pt-14 lg:px-8">
-          <div className="mx-auto box-border flex max-w-[1440px] flex-col pt-[env(safe-area-inset-top)]">
+        <main className="app-main h-screen overflow-x-hidden overflow-y-auto px-4 pt-14 pb-2 text-foreground [scrollbar-gutter:stable_both-edges] sm:px-6 lg:px-8">
+          <div className="mx-auto box-border flex max-w-[1600px] flex-col pt-[env(safe-area-inset-top)]">
             <PageTransition>{children}</PageTransition>
           </div>
         </main>

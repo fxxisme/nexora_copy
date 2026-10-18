@@ -14,25 +14,32 @@ import (
 )
 
 type Server struct {
-	root               string
-	dataDir            string
-	imagesDir          string
-	webDist            string
-	cfg                Config
-	store              *Store
-	mux                *http.ServeMux
-	accMu              sync.Mutex
-	authMu             sync.Mutex
-	taskMu             sync.Mutex
-	galleryMu          sync.Mutex
-	logMu              sync.Mutex
-	imageCleanupMu     sync.Mutex
-	lastImageCleanup   time.Time
-	callStarts         map[string]time.Time
-	taskCancels        map[string]context.CancelFunc
-	accountPool        *accountPool
-	accountRefreshJobs accountRefreshJobs
-	logSvc             *logService
+	root                string
+	dataDir             string
+	imagesDir           string
+	webDist             string
+	cfg                 Config
+	store               *Store
+	mux                 *http.ServeMux
+	accMu               sync.Mutex
+	authMu              sync.Mutex
+	taskMu              sync.Mutex
+	galleryMu           sync.Mutex
+	logMu               sync.Mutex
+	imageCleanupMu      sync.Mutex
+	lastImageCleanup    time.Time
+	proxyCursor         uint64
+	imageEgressMu       sync.Mutex
+	imageEgressInflight map[string]int
+	imageEgressNotify   chan struct{}
+	callStarts          map[string]time.Time
+	taskCancels         map[imageTaskKey]context.CancelFunc
+	taskRunnerOnce      sync.Once
+	imageTasks          *imageTaskRunner
+	accountPool         *accountPool
+	accountRefreshJobs  accountRefreshJobs
+	logSvc              *logService
+	register            *registerService
 }
 
 func NewServer(root string) (*Server, error) {
@@ -68,16 +75,33 @@ func NewServer(root string) (*Server, error) {
 	if cfg.AIReview == nil {
 		cfg.AIReview = map[string]any{"enabled": false}
 	}
-	s := &Server{root: root, dataDir: filepath.Join(root, "data"), imagesDir: filepath.Join(root, "data", "images"), webDist: filepath.Join(root, "web_dist"), cfg: cfg, callStarts: map[string]time.Time{}, taskCancels: map[string]context.CancelFunc{}, accountPool: newAccountPool(&cfg)}
+	s := &Server{root: root, dataDir: filepath.Join(root, "data"), imagesDir: filepath.Join(root, "data", "images"), webDist: filepath.Join(root, "web_dist"), cfg: cfg, callStarts: map[string]time.Time{}, taskCancels: map[imageTaskKey]context.CancelFunc{}, accountPool: newAccountPool(&cfg)}
 	if err := os.MkdirAll(s.imagesDir, 0755); err != nil {
 		return nil, err
 	}
+	s.store, err = OpenStore(s.dataDir)
+	if err != nil {
+		return nil, err
+	}
 	s.logSvc = newLogService(s.dataDir)
-	s.store = NewStore(s.dataDir)
-	s.recoverUnfinishedTasks()
-	s.cleanupOldTasks()
+	s.logSvc.store = s.store
+	s.register = newRegisterService(s.dataDir, s.store)
+	if s.register.initErr != nil {
+		s.store.Close()
+		return nil, s.register.initErr
+	}
+	s.register.server = s
+	if err := s.recoverUnfinishedTasks(); err != nil {
+		s.store.Close()
+		return nil, err
+	}
+	if err := s.cleanupOldTasks(); err != nil {
+		s.store.Close()
+		return nil, err
+	}
 	s.mux = http.NewServeMux()
 	s.routes()
+	s.maybeStartRegister()
 	s.startLimitedAccountWatcher()
 	return s, nil
 }
@@ -89,13 +113,20 @@ func loadConfig(path string) (Config, error) {
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return Config{}, err
+		}
 		raw = map[string]any{}
 	} else {
-		_ = json.Unmarshal(b, &raw)
+		if err := json.Unmarshal(b, &raw); err != nil {
+			return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+		}
 	}
 	var cfg Config
 	if b, _ := json.Marshal(raw); len(b) > 0 {
-		_ = json.Unmarshal(b, &cfg)
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			return Config{}, fmt.Errorf("decode config %s: %w", path, err)
+		}
 	}
 	cfg.Extra = raw
 	return cfg, nil
@@ -115,6 +146,7 @@ func (s *Server) configMap(includeAuth bool) map[string]any {
 		m["auth-key"] = s.cfg.AuthKey
 	} else {
 		delete(m, "auth-key")
+		delete(m, "sentinel_solver_key")
 	}
 	m["refresh_account_interval_minute"] = s.cfg.RefreshAccountIntervalMinute
 	m["image_retention_days"] = s.cfg.ImageRetentionDays
@@ -180,15 +212,29 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/accounts/refresh/start", s.handleAccountsRefreshStart)
 	s.mux.HandleFunc("/api/accounts/refresh/progress/", s.handleAccountsRefreshProgress)
 	s.mux.HandleFunc("/api/accounts/update", s.handleAccountsUpdate)
+	s.mux.HandleFunc("/api/accounts/mfa/code", s.handleAccountMFACode)
+	s.mux.HandleFunc("/api/account-groups", s.handleAccountGroups)
+	s.mux.HandleFunc("/api/account-groups/", s.handleAccountGroupID)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/storage/info", s.handleStorageInfo)
 	s.mux.HandleFunc("/api/system/status", s.handleSystemStatus)
 	s.mux.HandleFunc("/api/transport/status", s.handleSystemStatus)
 	s.mux.HandleFunc("/api/proxy", s.handleProxy)
+	s.mux.HandleFunc("/api/proxy/view", s.handleProxyView)
+	s.mux.HandleFunc("/api/proxy/defaults", s.handleProxyDefaults)
+	s.mux.HandleFunc("/api/proxy/groups", s.handleProxyGroups)
+	s.mux.HandleFunc("/api/proxy/groups/", s.handleProxyGroupID)
+	s.mux.HandleFunc("/api/proxy/groups/test", s.handleProxyGroupTest)
+	s.mux.HandleFunc("/api/proxy/nodes/import", s.handleProxyNodeImport)
 	s.mux.HandleFunc("/api/proxy/test", s.handleProxyTest)
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
+	s.mux.HandleFunc("/api/dashboard", s.handleDashboard)
+	s.mux.HandleFunc("/api/dashboard/", s.handleDashboard)
 	s.mux.HandleFunc("/api/logs/delete", s.handleLogsDelete)
 	s.mux.HandleFunc("/api/images", s.handleImages)
+	s.mux.HandleFunc("/api/prompts", s.handlePromptLibrary)
+	s.mux.HandleFunc("/api/admin/prompt-sources/refresh", s.handlePromptSourcesRefresh)
+	s.mux.HandleFunc("/api/admin/prompt-sources/", s.handlePromptSource)
 	s.mux.HandleFunc("/api/me/images", s.handleMyImages)
 	s.mux.HandleFunc("/api/images/owners", s.handleImageOwners)
 	s.mux.HandleFunc("/api/images/delete", s.handleImageDelete)
@@ -214,8 +260,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/cpa/pools/", s.handleCPAPoolID)
 	s.mux.HandleFunc("/api/sub2api/servers", s.handleSub2APIServers)
 	s.mux.HandleFunc("/api/sub2api/servers/", s.handleSub2APIServerID)
-	s.mux.HandleFunc("/api/register", s.handleRegisterDisabled)
-	s.mux.HandleFunc("/api/register/", s.handleRegisterDisabled)
+	s.mux.HandleFunc("/api/register", s.handleRegister)
+	s.mux.HandleFunc("/api/register/start", s.handleRegisterStart)
+	s.mux.HandleFunc("/api/register/stop", s.handleRegisterStop)
+	s.mux.HandleFunc("/api/register/reset", s.handleRegisterReset)
+	s.mux.HandleFunc("/api/register/repair-abnormal", s.handleRegisterRepairAbnormal)
+	s.mux.HandleFunc("/api/register/outlook-pool/reset", s.handleRegisterOutlookPoolReset)
+	s.mux.HandleFunc("/api/register/events", s.handleRegisterEvents)
 	s.mux.HandleFunc("/api/backup/test", s.handleBackupDisabled)
 	s.mux.HandleFunc("/api/backups", s.handleBackupsDisabled)
 	s.mux.HandleFunc("/api/backups/", s.handleBackupDisabled)

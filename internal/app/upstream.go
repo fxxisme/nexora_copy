@@ -38,25 +38,28 @@ const bootstrapMaxAttempts = 3
 const clientCreatedRoot = "client-created-root"
 
 type UpstreamClient struct {
-	token            string
-	defaultModelSlug string
-	client           upstreamHTTPDoer
-	userAgent        string
-	deviceID         string
-	sessionID        string
-	secCHUA          string
-	secCHUAMobile    string
-	secCHUAPlatform  string
-	scriptSources    []string
-	dataBuild        string
-	solverURL        string
-	solverKey        string
-	localSolver      sentinelLocalSolver
-	sentinelIdentity sentinelIdentity
-	timezone         string
-	browserDate      string
-	imageTurnTrace   string
-	imageBrowserID   string
+	token                    string
+	proxyRoute               proxyRoute
+	imageConversationStarted bool
+	textConversationStarted  bool
+	defaultModelSlug         string
+	client                   upstreamHTTPDoer
+	userAgent                string
+	deviceID                 string
+	sessionID                string
+	secCHUA                  string
+	secCHUAMobile            string
+	secCHUAPlatform          string
+	scriptSources            []string
+	dataBuild                string
+	solverURL                string
+	solverKey                string
+	localSolver              sentinelLocalSolver
+	sentinelIdentity         sentinelIdentity
+	timezone                 string
+	browserDate              string
+	imageTurnTrace           string
+	imageBrowserID           string
 }
 
 type chatRequirements struct{ Token, ProofToken, TurnstileToken, SOToken string }
@@ -304,6 +307,9 @@ func (c *UpstreamClient) bootstrap(ctx context.Context) error {
 			return nil
 		}
 		lastErr = err
+		if isProxyConnectionFailure(err) {
+			return err
+		}
 		if !isRetryableBootstrapError(err) {
 			return err
 		}
@@ -324,6 +330,10 @@ func (c *UpstreamClient) bootstrapOnce(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusProxyAuthRequired {
+			traceLogf(ctx, "│  └─ bootstrap proxy authentication failed status=407 duration=%s", traceHTTPDuration(start))
+			return &proxyConnectionError{cause: errors.New("bootstrap proxy authentication failed: HTTP 407")}
+		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		location := strings.TrimSpace(resp.Header.Get("Location"))
 		traceLogf(ctx, "│  └─ bootstrap response status=%d location=%q duration=%s body=%s", resp.StatusCode, location, traceHTTPDuration(start), truncateText(string(b), 800))
@@ -483,6 +493,7 @@ func (c *UpstreamClient) StreamChatConversationEvents(ctx context.Context, messa
 }
 
 func (c *UpstreamClient) streamTextConversationEvents(ctx context.Context, messages []map[string]any, model, conversationID string, historyDisabled bool) (<-chan UpstreamTextEvent, <-chan error) {
+	c.textConversationStarted = false
 	out := make(chan UpstreamTextEvent)
 	errs := make(chan error, 1)
 	go func() {
@@ -531,6 +542,7 @@ func (c *UpstreamClient) streamTextConversationEvents(ctx context.Context, messa
 			path = "/backend-anon/conversation"
 		}
 		traceLogf(ctx, "│  ├─ step open upstream SSE conversation")
+		c.textConversationStarted = true
 		resp, err := c.do(ctx, http.MethodPost, path, c.conversationHeaders(path, cr), payload, true)
 		if err != nil {
 			errs <- err
@@ -558,6 +570,7 @@ func (c *UpstreamClient) streamTextConversationEvents(ctx context.Context, messa
 
 func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size, resolution string, refs [][]byte, opts imageGenerationOptions) ([]upstreamImageResult, error) {
 	opts = normalizeImageGenerationOptions(opts)
+	c.imageConversationStarted = false
 	traceLogf(ctx, "├─ image generation start model=%s size=%s resolution=%s refs=%d timeout=%s poll_interval=%s initial_wait=%s", model, size, resolution, len(refs), opts.Timeout, opts.PollInterval, opts.PollInitialWait)
 	if c.token == "" {
 		return nil, errors.New("access token is required for image generation")
@@ -589,6 +602,7 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 		return nil, err
 	}
 	traceLogf(ctx, "│  ├─ step start image SSE conversation uploads=%d", len(uploads))
+	c.imageConversationStarted = true
 	resp, err := c.startImage(ctx, finalPrompt, model, cr, conduit, uploads)
 	if err != nil {
 		return nil, err
@@ -645,9 +659,9 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 	}
 	if len(urls) == 0 {
 		if message != "" {
-			return nil, errors.New(cleanImageMessage(message))
+			return nil, imageTextReplyFailure(message)
 		}
-		return nil, errors.New("upstream returned no image")
+		return nil, errNoImageGenerated
 	}
 	results := []upstreamImageResult{}
 	seenBytes := map[string]bool{}
@@ -655,7 +669,7 @@ func (c *UpstreamClient) GenerateImage(ctx context.Context, prompt, model, size,
 		traceLogf(ctx, "│  ├─ step download generated image %d/%d", i+1, len(urls))
 		b, err := c.download(ctx, u)
 		if err != nil {
-			return nil, err
+			return nil, imageDownloadFailure(u, err)
 		}
 		sum := fmt.Sprintf("%x", md5.Sum(b))
 		if seenBytes[sum] {
@@ -680,7 +694,7 @@ func (c *UpstreamClient) imageIDsAfterSSE(ctx context.Context, cid, message stri
 		sedimentIDs = append(sedimentIDs, s...)
 	}
 	if message != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 && (state.Blocked || state.ToolInvoked == false || state.TurnUseCase == "text") {
-		return nil, nil, errors.New(cleanImageMessage(message))
+		return nil, nil, imageTextReplyFailure(message)
 	}
 	return fileIDs, sedimentIDs, nil
 }
@@ -1033,8 +1047,8 @@ func (c *UpstreamClient) downloadOnce(ctx context.Context, u string) ([]byte, er
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		traceLogf(ctx, "│  └─ download failed duration=%s error=%v", traceHTTPDuration(start), err)
-		return nil, fmt.Errorf("download failed: %w (url: %.100s)", err, u)
+		traceLogf(ctx, "│  └─ download failed duration=%s url=%s", traceHTTPDuration(start), safeURLForLog(u))
+		return nil, &imageDownloadTransportError{cause: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -1094,7 +1108,7 @@ func (c *UpstreamClient) ListModels(ctx context.Context) (map[string]any, error)
 			}
 		}
 	}
-	for _, slug := range []string{"gpt-image-2", "codex-gpt-image-2"} {
+	for _, slug := range append(append([]string{}, webImageModels...), "codex-gpt-image-2") {
 		if !seen[slug] {
 			data = append(data, map[string]any{"id": slug, "object": "model", "created": time.Now().Unix(), "owned_by": "chatgpt2api-go", "permission": []any{}, "root": slug, "parent": nil})
 		}
@@ -1124,18 +1138,27 @@ func (c *UpstreamClient) GetUserInfo(ctx context.Context) (Account, error) {
 		}
 	}
 	for _, check := range checks {
-		if check.err != nil {
+		if check.err != nil && check.path != "GET /backend-api/accounts/check/v4-2023-04-27" {
 			return Account{}, fmt.Errorf("%s: %w", check.path, check.err)
 		}
 	}
 	planType := ""
-	if accounts, ok := accountPayload["accounts"].(map[string]any); ok {
-		if def, ok := accounts["default"].(map[string]any); ok {
-			if acct, ok := def["account"].(map[string]any); ok {
+	trialState, trialPromoID, trialPromoLabel := "unknown", "", ""
+	if accountErr == nil {
+		var accountEntry map[string]any
+		if accounts, ok := accountPayload["accounts"].(map[string]any); ok {
+			accountEntry, _ = accounts[chatGPTAccountID(c.token)].(map[string]any)
+			if accountEntry == nil {
+				accountEntry, _ = accounts["default"].(map[string]any)
+			}
+		}
+		if accountEntry != nil {
+			if acct, ok := accountEntry["account"].(map[string]any); ok {
 				if plan := strAny(acct["plan_type"], ""); plan != "" {
 					planType = normalizeAccountType(plan)
 				}
 			}
+			trialState, trialPromoID, trialPromoLabel = parseAccountTrial(accountEntry)
 		}
 	}
 	quota, restoreAt, quotaUnknown, limits := 0, "", true, []map[string]any{}
@@ -1159,7 +1182,7 @@ func (c *UpstreamClient) GetUserInfo(ctx context.Context) (Account, error) {
 	if !quotaUnknown && quota <= 0 {
 		status = "限流"
 	}
-	acc := Account{AccessToken: c.token, Type: planType, Status: status, SourceType: "web", Quota: quota, ImageQuotaUnknown: quotaUnknown, LimitsProgress: limits}
+	acc := Account{AccessToken: c.token, Type: planType, Status: status, SourceType: "web", Quota: quota, ImageQuotaUnknown: quotaUnknown, LimitsProgress: limits, TrialState: trialState, TrialPromoID: trialPromoID, TrialPromoLabel: trialPromoLabel, TrialCheckedAt: nowISO()}
 	if e := strAny(me["email"], ""); e != "" {
 		acc.Email = &e
 	}
@@ -1177,6 +1200,40 @@ func (c *UpstreamClient) GetUserInfo(ctx context.Context) (Account, error) {
 		acc.InitialQuota = acc.Quota
 	}
 	return acc, nil
+}
+
+func parseAccountTrial(entry map[string]any) (state, promoID, label string) {
+	account, ok := entry["account"].(map[string]any)
+	if !ok {
+		return "unknown", "", ""
+	}
+	plan := strings.ToLower(strings.TrimSpace(strAny(account["plan_type"], "")))
+	entitlement, _ := entry["entitlement"].(map[string]any)
+	subscription := strings.ToLower(strings.TrimSpace(strAny(entitlement["subscription_plan"], "")))
+	if (plan != "" && plan != "free") || (subscription != "" && subscription != "chatgptfreeplan") {
+		return "subscribed", "", "已订阅"
+	}
+	campaigns, _ := entry["eligible_promo_campaigns"].(map[string]any)
+	plus, ok := campaigns["plus"].(map[string]any)
+	if !ok {
+		return "not-eligible", "", "无优惠"
+	}
+	promoID = strings.TrimSpace(strAny(plus["id"], ""))
+	if promoID == "" {
+		return "unknown", "", ""
+	}
+	if promoID == "plus-1-month-free" {
+		return "eligible", promoID, "一个月免费"
+	}
+	metadata, _ := plus["metadata"].(map[string]any)
+	discount, _ := metadata["discount"].(map[string]any)
+	duration, _ := metadata["duration"].(map[string]any)
+	percentage := intAny(discount["percentage"], -1)
+	periods := intAny(duration["num_periods"], 0)
+	if percentage > 0 && percentage <= 100 && periods > 0 {
+		return "discount", promoID, fmt.Sprintf("%d个月%g折", periods, 10-float64(percentage)/10)
+	}
+	return "discount", promoID, "优惠券"
 }
 
 func (c *UpstreamClient) getJSON(ctx context.Context, method, path string, headers map[string]string, body any) (map[string]any, error) {
@@ -2069,14 +2126,13 @@ func normalizeTextModelOptions(model string) textModelOptions {
 }
 
 func imageModelSlug(model string) string {
-	switch strings.TrimSpace(strings.ToLower(model)) {
-	case "gpt-image-2":
-		return "auto"
-	case "codex-gpt-image-2":
-		return "codex-gpt-image-2"
-	default:
+	if isWebImageModel(model) {
 		return "auto"
 	}
+	if isCodexImageModel(model) {
+		return "codex-gpt-image-2"
+	}
+	return "auto"
 }
 
 func (c *UpstreamClient) imageModelSlug(model string) string {
@@ -2321,7 +2377,7 @@ func (s *Server) upstreamClient() (*UpstreamClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+	return s.newUpstreamClientForAccount(account)
 }
 func (s *Server) upstreamClientForImage(model, resolution string) (*UpstreamClient, error) {
 	return s.upstreamClientForImageExcluding(model, resolution, nil)
@@ -2344,7 +2400,7 @@ func (s *Server) upstreamClientForImageAccount(model, resolution string, account
 			account = refreshed
 		}
 	}
-	client, err := NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+	client, err := s.newUpstreamClientForAccount(account)
 	return client, account, err
 }
 

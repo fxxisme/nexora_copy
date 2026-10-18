@@ -5,8 +5,8 @@
 ## 本次迁移范围
 
 - 保留 `web/` Next.js 前端，生产环境由 Go 后端直接服务 `web_dist/`。
-- 存储仅保留 JSON 文件，数据目录为 `data/`。
-- 移除数据库 / Git 存储后端。
+- 默认使用 SQLite，支持通过 PostgreSQL `DATABASE_URL` 切换数据库。
+- 旧业务 JSON 文件首次启动时导入数据库，原件保留作备份；图片仍存放在 `data/images/`。
 - 移除注册机真实逻辑，相关接口返回 disabled 状态，避免前端页面崩溃。
 - 移除 Cloudflare R2 备份真实逻辑，备份接口返回 disabled/空列表。
 - 保留管理面板核心端点：账号、用户密钥、设置、日志、图片管理、画廊、图片任务、聊天会话。
@@ -63,16 +63,9 @@ docker build -t chatgpt2api-go .
 docker run --rm -p 3000:80 -v "$PWD/data:/app/data" -e CHATGPT2API_AUTH_KEY=chatgpt2api chatgpt2api-go
 ```
 
-## JSON 数据文件
+## 数据库存储
 
-- `data/accounts.json`
-- `data/auth_keys.json`
-- `data/gallery.json`
-- `data/image_tasks.json`
-- `data/logs.json`
-- `data/image_owners.json`
-- `data/image_prompts.json`
-- `data/image_tags.json`
-- `data/chat_conversations.json`
-- `data/cpa_pools.json`
-- `data/sub2api_servers.json`
+- SQLite：默认 `data/chatgpt2api.db`，可通过 `DATABASE_URL=sqlite:///绝对路径/chatgpt2api.db` 指定位置。
+- PostgreSQL：`DATABASE_URL=postgresql://user:password@host:5432/dbname`。
+- 旧 `data/*.json` 业务数据和 `logs.jsonl` 在数据库首次初始化时自动导入；导入失败会阻止启动。保留旧文件以便核对和备份。
+- 旧版 Go SQL 数据库中以整份文档保存的账号和用户密钥会在启动时迁入独立记录表；升级时先停止旧服务进程。

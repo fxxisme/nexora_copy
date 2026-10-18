@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -53,36 +52,80 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "tokens, accounts or account_records is required")
 			return
 		}
-		accounts := s.store.LoadAccounts()
-		existing := map[string]int{}
-		for i, a := range accounts {
-			existing[a.AccessToken] = i
+		for _, rec := range tokset {
+			if raw, ok := rec["group_id"]; ok {
+				groupID, valid := raw.(string)
+				if !valid {
+					writeErr(w, http.StatusBadRequest, "group_id must be a string")
+					return
+				}
+				if err := s.store.ValidateAccountGroupID(groupID); err != nil {
+					writeErr(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+			raw, hasProxy := rec["proxy"]
+			legacyGroup, hasLegacyGroup := rec["proxy_group_id"]
+			if !hasProxy && !hasLegacyGroup {
+				continue
+			}
+			assignment, ok := raw.(string)
+			if hasProxy && !ok {
+				writeErr(w, http.StatusBadRequest, "proxy must be a string")
+				return
+			}
+			if !hasProxy || strings.TrimSpace(assignment) == "" && hasLegacyGroup {
+				groupID, ok := legacyGroup.(string)
+				if !ok {
+					writeErr(w, http.StatusBadRequest, "proxy_group_id must be a string")
+					return
+				}
+				if strings.TrimSpace(groupID) != "" {
+					assignment = "group:" + strings.TrimSpace(groupID)
+				}
+			}
+			normalized, err := s.store.normalizeAccountProxyAssignment(assignment)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, "账号代理配置无效: "+err.Error())
+				return
+			}
+			rec["proxy"] = normalized
 		}
 		added, skipped, signupTokens := 0, 0, 0
-		for token, rec := range tokset {
+		for token := range tokset {
 			if isSignupAccessToken(token) {
 				signupTokens++
 			}
-			a := accountFromRecord(token, source, rec)
-			if idx, ok := existing[token]; ok {
-				cur := accounts[idx]
-				mergeImportedAccount(&cur, a, rec, body.SourceType != "")
-				accounts[idx] = cur
-				skipped++
-			} else {
-				accounts = append(accounts, a)
-				added++
-			}
 		}
-		_ = s.store.SaveAccounts(accounts)
+		if err := s.store.UpdateAccounts(func(accounts []Account) []Account {
+			existing := map[string]int{}
+			for i, a := range accounts {
+				existing[a.AccessToken] = i
+			}
+			for token, rec := range tokset {
+				a := accountFromRecord(token, source, rec)
+				if idx, ok := existing[token]; ok {
+					cur := accounts[idx]
+					mergeImportedAccount(&cur, a, rec, body.SourceType != "")
+					accounts[idx] = cur
+					skipped++
+				} else {
+					accounts = append(accounts, a)
+					added++
+				}
+			}
+			return accounts
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存账号失败: "+err.Error())
+			return
+		}
 		refreshed, errs := s.refreshAccountInfos(r.Context(), keysOf(tokset))
-		accounts = s.store.LoadAccounts()
+		accounts := s.store.LoadAccounts()
 		s.logSvc.add("account", "新增账号", map[string]any{"added": added, "skipped": skipped, "refreshed": refreshed})
 		writeJSON(w, 200, map[string]any{"added": added, "skipped": skipped, "refreshed": refreshed, "signup_tokens": signupTokens, "errors": errs, "items": accounts})
 	case http.MethodDelete:
 		var body struct {
-			Tokens          []string `json:"tokens"`
-			DeleteMailboxes bool     `json:"delete_mailboxes"`
+			Tokens []string `json:"tokens"`
 		}
 		if !readBody(w, r, &body) {
 			return
@@ -93,18 +136,23 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 				targets[strings.TrimSpace(t)] = true
 			}
 		}
-		accounts := s.store.LoadAccounts()
-		out := []Account{}
 		removed := 0
-		for _, a := range accounts {
-			if targets[a.AccessToken] {
-				removed++
-			} else {
-				out = append(out, a)
+		var out []Account
+		if err := s.store.UpdateAccounts(func(accounts []Account) []Account {
+			out = make([]Account, 0, len(accounts))
+			for _, a := range accounts {
+				if targets[a.AccessToken] {
+					removed++
+				} else {
+					out = append(out, a)
+				}
 			}
+			return out
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "删除账号失败: "+err.Error())
+			return
 		}
-		_ = s.store.SaveAccounts(out)
-		writeJSON(w, 200, map[string]any{"removed": removed, "mailboxes_removed": 0, "mailbox_errors": []any{}, "items": out})
+		writeJSON(w, 200, map[string]any{"removed": removed, "items": out})
 	default:
 		writeErr(w, 405, "method not allowed")
 	}
@@ -131,6 +179,8 @@ func accountFromRecord(token, source string, rec map[string]any) Account {
 	}
 	now := nowISO()
 	a := Account{AccessToken: token, Type: typ, SourceType: source, IsSignupToken: isSignupAccessToken(token), Status: status, Quota: intAny(rec["quota"], 0), Success: intAny(rec["success"], 0), Fail: intAny(rec["fail"], 0), CreatedAt: &now, ImageQuotaUnknown: boolAny(rec["image_quota_unknown"], false)}
+	a.Proxy = strings.TrimSpace(strAny(rec["proxy"], ""))
+	a.GroupID = strings.TrimSpace(strAny(rec["group_id"], ""))
 	a.ExportType = strings.TrimSpace(strAny(rec["export_type"], ""))
 	if strings.EqualFold(strAny(rec["type"], ""), "codex") {
 		a.ExportType = "codex"
@@ -174,6 +224,10 @@ func accountFromRecord(token, source string, rec map[string]any) Account {
 	}
 	if v := strings.TrimSpace(strAny(rec["email"], "")); v != "" {
 		a.Email = &v
+	}
+	a.MFAStatus = strings.TrimSpace(strAny(rec["mfa_status"], ""))
+	if v := strings.TrimSpace(strAny(rec["mfa_secret"], "")); v != "" {
+		a.MFASecret = &v
 	}
 	if v := strings.TrimSpace(strAny(rec["user_id"], "")); v != "" {
 		a.UserID = &v
@@ -244,6 +298,12 @@ func keysOf(m map[string]map[string]any) []string {
 }
 
 func mergeImportedAccount(dst *Account, src Account, rec map[string]any, explicitSource bool) {
+	if _, ok := rec["group_id"]; ok {
+		dst.GroupID = src.GroupID
+	}
+	if _, ok := rec["proxy"]; ok {
+		dst.Proxy = src.Proxy
+	}
 	if strings.TrimSpace(strAny(rec["type"], strAny(rec["plan_type"], ""))) == "" {
 		src.Type = ""
 	}
@@ -261,6 +321,9 @@ func mergeImportedAccount(dst *Account, src Account, rec map[string]any, explici
 }
 
 func mergeAccount(dst *Account, src Account) {
+	if src.Proxy != "" {
+		dst.Proxy = src.Proxy
+	}
 	if src.ExportType != "" {
 		dst.ExportType = src.ExportType
 	}
@@ -287,6 +350,12 @@ func mergeAccount(dst *Account, src Account) {
 	if src.Type != "" {
 		dst.Type = src.Type
 	}
+	if src.TrialCheckedAt != "" {
+		dst.TrialState = src.TrialState
+		dst.TrialPromoID = src.TrialPromoID
+		dst.TrialPromoLabel = src.TrialPromoLabel
+		dst.TrialCheckedAt = src.TrialCheckedAt
+	}
 	if src.SourceType != "" {
 		dst.SourceType = src.SourceType
 	}
@@ -298,6 +367,12 @@ func mergeAccount(dst *Account, src Account) {
 	}
 	if src.Email != nil {
 		dst.Email = src.Email
+	}
+	if src.MFAStatus != "" {
+		dst.MFAStatus = src.MFAStatus
+	}
+	if src.MFASecret != nil {
+		dst.MFASecret = src.MFASecret
 	}
 	if src.UserID != nil {
 		dst.UserID = src.UserID
@@ -374,17 +449,18 @@ func (s *Server) refreshAccountInfos(parent context.Context, tokens []string) (i
 	}
 	selected := []Account{}
 	for _, a := range s.store.LoadAccounts() {
-		if len(want) > 0 && !want[a.AccessToken] {
+		if len(tokens) > 0 && !want[a.AccessToken] {
 			continue
 		}
 		selected = append(selected, a)
-	}
-	if len(selected) == 0 {
-		return 0, []map[string]any{}
+		delete(want, a.AccessToken)
 	}
 	results := runAccountRefreshBatch(parent, selected, s.refreshAccountInfo)
 	refreshed := 0
 	errs := []map[string]any{}
+	for token := range want {
+		errs = append(errs, map[string]any{"token": token, "error": "account not found"})
+	}
 	for i, err := range results {
 		if err == nil {
 			refreshed++
@@ -449,7 +525,7 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 			preflightErr = err
 		}
 	}
-	client, err := NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+	client, err := s.newUpstreamClientForAccount(a)
 	if err != nil {
 		return err
 	}
@@ -465,7 +541,7 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 			}
 			if refreshErr == nil {
 				a = refreshed
-				client, err = NewUpstreamClientForAccount(a, s.cfg.Proxy, s.ensureCurlImpersonateBinary, s.cfg)
+				client, err = s.newUpstreamClientForAccount(a)
 				if err == nil {
 					info, err = client.GetUserInfo(ctx)
 				}
@@ -546,12 +622,18 @@ func (s *Server) handleAccountsRefresh(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		AccessTokens []string `json:"access_tokens"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !readBody(w, r, &body) {
+		return
+	}
 	want := map[string]bool{}
 	for _, t := range body.AccessTokens {
 		if strings.TrimSpace(t) != "" {
 			want[strings.TrimSpace(t)] = true
 		}
+	}
+	if len(body.AccessTokens) > 0 && len(want) == 0 {
+		writeErr(w, http.StatusBadRequest, "no valid accounts selected")
+		return
 	}
 	var tokens []string
 	if len(want) > 0 {
@@ -566,8 +648,71 @@ func (s *Server) handleAccountsUpdate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	var body map[string]any
 	if !readBody(w, r, &body) {
+		return
+	}
+	if rawTokens, ok := body["access_tokens"]; ok {
+		values, ok := rawTokens.([]any)
+		if !ok || len(values) == 0 {
+			writeErr(w, http.StatusBadRequest, "access_tokens is required")
+			return
+		}
+		status := strings.TrimSpace(strAny(body["status"], ""))
+		_, hasStatus := body["status"]
+		if hasStatus && status != "正常" && status != "禁用" {
+			writeErr(w, http.StatusBadRequest, "status must be 正常 or 禁用")
+			return
+		}
+		groupID := ""
+		if raw, ok := body["group_id"]; ok {
+			var valid bool
+			groupID, valid = raw.(string)
+			if !valid {
+				writeErr(w, http.StatusBadRequest, "group_id must be a string")
+				return
+			}
+			groupID = strings.TrimSpace(groupID)
+			if err := s.store.ValidateAccountGroupID(groupID); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else if !hasStatus {
+			writeErr(w, http.StatusBadRequest, "status or group_id is required")
+			return
+		}
+		targets := make(map[string]bool, len(values))
+		for _, value := range values {
+			token, ok := value.(string)
+			if !ok || strings.TrimSpace(token) == "" {
+				writeErr(w, http.StatusBadRequest, "access_tokens contains an invalid token")
+				return
+			}
+			targets[strings.TrimSpace(token)] = true
+		}
+		updated := 0
+		if err := s.store.UpdateAccounts(func(accounts []Account) []Account {
+			for i := range accounts {
+				if targets[accounts[i].AccessToken] {
+					if hasStatus {
+						accounts[i].Status = status
+					}
+					if _, ok := body["group_id"]; ok {
+						accounts[i].GroupID = groupID
+					}
+					updated++
+				}
+			}
+			return accounts
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "update accounts failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "items": s.store.LoadAccounts()})
 		return
 	}
 	token := strings.TrimSpace(strAny(body["access_token"], ""))
@@ -575,9 +720,38 @@ func (s *Server) handleAccountsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "access_token is required")
 		return
 	}
-	accounts := s.store.LoadAccounts()
-	for i, a := range accounts {
-		if a.AccessToken == token {
+	if raw, ok := body["proxy"]; ok {
+		assignment, valid := raw.(string)
+		if !valid {
+			writeErr(w, http.StatusBadRequest, "proxy must be a string")
+			return
+		}
+		normalized, err := s.store.normalizeAccountProxyAssignment(assignment)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "账号代理配置无效: "+err.Error())
+			return
+		}
+		body["proxy"] = normalized
+	}
+	if raw, ok := body["group_id"]; ok {
+		groupID, valid := raw.(string)
+		if !valid {
+			writeErr(w, http.StatusBadRequest, "group_id must be a string")
+			return
+		}
+		groupID = strings.TrimSpace(groupID)
+		if err := s.store.ValidateAccountGroupID(groupID); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		body["group_id"] = groupID
+	}
+	var updated *Account
+	if err := s.store.UpdateAccounts(func(accounts []Account) []Account {
+		for i, a := range accounts {
+			if a.AccessToken != token {
+				continue
+			}
 			if v, ok := body["type"]; ok {
 				a.Type = strAny(v, a.Type)
 			}
@@ -587,11 +761,24 @@ func (s *Server) handleAccountsUpdate(w http.ResponseWriter, r *http.Request) {
 			if v, ok := body["quota"]; ok {
 				a.Quota = intAny(v, a.Quota)
 			}
+			if v, ok := body["proxy"]; ok {
+				a.Proxy = v.(string)
+			}
+			if v, ok := body["group_id"]; ok {
+				a.GroupID = v.(string)
+			}
 			accounts[i] = a
-			_ = s.store.SaveAccounts(accounts)
-			writeJSON(w, 200, map[string]any{"item": a, "items": accounts})
-			return
+			updated = &a
+			break
 		}
+		return accounts
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "更新账号失败: "+err.Error())
+		return
+	}
+	if updated != nil {
+		writeJSON(w, 200, map[string]any{"item": updated, "items": s.store.LoadAccounts()})
+		return
 	}
 	writeErr(w, 404, "account not found")
 }

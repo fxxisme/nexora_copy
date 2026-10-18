@@ -5,6 +5,7 @@ import { History, Infinity as InfinityIcon, LoaderCircle, Plus, Trash2 } from "l
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
+import { PromptLibraryDialog } from "@/app/image/components/prompt-library-dialog";
 import { ImageResults, type ImageLightboxItem, type ImagePublishState } from "@/app/image/components/image-results";
 import { ImageSidebar } from "@/app/image/components/image-sidebar";
 import { ImageLightbox } from "@/components/image-lightbox";
@@ -160,7 +161,7 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
 }
 
 function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage {
-  if (task.status === "success") {
+  if (task.status === "success" || task.status === "partial_success") {
     const first = task.data?.[0];
     if (!first?.b64_json && !first?.url) {
       return {
@@ -404,6 +405,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageCount, setImageCount] = useState("1");
   const [imageSize, setImageSize] = useState("");
   const [imageResolution, setImageResolution] = useState("");
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -1291,7 +1293,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       }
 
       activeConversationQueueIds.add(conversationId);
+      const submittedTaskIds = new Set<string>();
+      const submissionAttempts = new Map<string, number>();
       const applyTasks = async (tasks: ImageTask[]) => {
+        for (const task of tasks) submittedTaskIds.add(task.id);
         const taskMap = new Map(tasks.map((task) => [task.id, task]));
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
@@ -1317,6 +1322,17 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             turns,
           };
         });
+      };
+      const submitTasks = async (images: StoredImage[], referenceFiles: File[], apiPrompt: string) => {
+        const outcomes = await Promise.allSettled(images.map((image) => {
+          const taskId = image.taskId || image.id;
+          submissionAttempts.set(taskId, (submissionAttempts.get(taskId) || 0) + 1);
+          return activeTurn.mode === "edit"
+            ? createImageEditTask(taskId, referenceFiles, apiPrompt, activeTurn.model, activeTurn.size, activeTurn.resolution)
+            : createImageGenerationTask(taskId, apiPrompt, activeTurn.model, activeTurn.size, activeTurn.resolution);
+        }));
+        const accepted = outcomes.flatMap((outcome) => outcome.status === "fulfilled" ? [outcome.value] : []);
+        if (accepted.length > 0) await applyTasks(accepted);
       };
 
       try {
@@ -1366,16 +1382,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         })();
 
         const pendingImages = activeTurn.images.filter((image) => image.status === "loading");
-        const submitted = await Promise.all(
-          pendingImages.map((image) => {
-            const taskId = image.taskId || image.id;
-            return activeTurn.mode === "edit"
-              ? createImageEditTask(taskId, referenceFiles, apiPrompt, activeTurn.model, activeTurn.size, activeTurn.resolution)
-              : createImageGenerationTask(taskId, apiPrompt, activeTurn.model, activeTurn.size, activeTurn.resolution);
-          }),
-        );
-        await applyTasks(submitted);
+        await submitTasks(pendingImages, referenceFiles, apiPrompt);
 
+        let pollFailures = 0;
         while (true) {
           const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
           const latestTurn = latestConversation?.turns.find((turn) => turn.id === activeTurn.id);
@@ -1388,7 +1397,15 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           }
 
           await sleep(2000);
-          const taskList = await fetchImageTasks(loadingTaskIds);
+          let taskList: Awaited<ReturnType<typeof fetchImageTasks>>;
+          try {
+            taskList = await fetchImageTasks(loadingTaskIds);
+            pollFailures = 0;
+          } catch {
+            pollFailures++;
+            await sleep(Math.min(30000, 2000 * 2 ** Math.min(pollFailures, 4)));
+            continue;
+          }
           if (taskList.items.length > 0) {
             await applyTasks(taskList.items);
           }
@@ -1396,16 +1413,27 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             const missingImages = latestTurn.images.filter(
               (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
             );
-            const resubmitted = await Promise.all(
-              missingImages.map((image) =>
-                activeTurn.mode === "edit"
-                  ? createImageEditTask(image.taskId || image.id, referenceFiles, apiPrompt, activeTurn.model, activeTurn.size, activeTurn.resolution)
-                  : createImageGenerationTask(image.taskId || image.id, apiPrompt, activeTurn.model, activeTurn.size, activeTurn.resolution),
-              ),
-            );
-            if (resubmitted.length > 0) {
-              await applyTasks(resubmitted);
+            const exhausted = missingImages.filter((image) => (submissionAttempts.get(image.taskId || image.id) || 0) >= 3);
+            if (exhausted.length > 0) {
+              const exhaustedIds = new Set(exhausted.map((image) => image.taskId || image.id));
+              await updateConversation(conversationId, (current) => {
+                const conversation = current ?? snapshot;
+                return {
+                  ...conversation,
+                  updatedAt: new Date().toISOString(),
+                  turns: conversation.turns.map((turn) => {
+                    if (turn.id !== activeTurn.id) return turn;
+                    const images = turn.images.map((image) =>
+                      image.status === "loading" && exhaustedIds.has(image.taskId || image.id)
+                        ? { ...image, status: "error" as const, error: "任务未创建，请重试" }
+                        : image,
+                    );
+                    return { ...turn, ...deriveTurnStatus({ ...turn, images }), images };
+                  }),
+                };
+              });
             }
+            await submitTasks(missingImages.filter((image) => !exhausted.includes(image)), referenceFiles, apiPrompt);
           }
         }
 
@@ -1417,18 +1445,15 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           return {
             ...conversation,
             updatedAt: new Date().toISOString(),
-            turns: conversation.turns.map((turn) =>
-              turn.id === activeTurn.id
-                ? {
-                    ...turn,
-                    status: "error",
-                    error: message,
-                    images: turn.images.map((image) =>
-                      image.status === "loading" ? { ...image, status: "error", error: message } : image,
-                    ),
-                  }
-                : turn,
-            ),
+            turns: conversation.turns.map((turn) => {
+              if (turn.id !== activeTurn.id) return turn;
+              const images: StoredImage[] = turn.images.map((image) =>
+                image.status === "loading" && !submittedTaskIds.has(image.taskId || image.id)
+                  ? { ...image, status: "error", error: message }
+                  : image,
+              );
+              return { ...turn, ...deriveTurnStatus({ ...turn, images }), images };
+            }),
           };
         });
         toast.error(message);
@@ -1803,6 +1828,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               onImageResolutionChange={setImageResolution}
               onSubmit={handleSubmit}
               onPickReferenceImage={() => fileInputRef.current?.click()}
+              onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
               onReferenceImageChange={handleReferenceImageChange}
               onRemoveReferenceImage={handleRemoveReferenceImage}
             />
@@ -1810,6 +1836,18 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
       </section>
+
+      <PromptLibraryDialog
+        open={promptLibraryOpen}
+        onOpenChange={setPromptLibraryOpen}
+        isAdmin={isAdmin}
+        onSelect={(item) => {
+          setImagePrompt(item.prompt);
+          if (item.image_count) setImageCount(clampImageCount(String(item.image_count)));
+          if (["1:1", "16:9", "4:3", "3:4", "9:16"].includes(item.image_size)) setImageSize(item.image_size);
+          window.setTimeout(() => textareaRef.current?.focus(), 0);
+        }}
+      />
 
       <ImageLightbox
         images={lightboxImages}

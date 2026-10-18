@@ -23,6 +23,10 @@ func TestSelectAccountsForRefreshOnlyIncludesRequestedTokens(t *testing.T) {
 	if len(selected) != len(accounts) || missing != 0 {
 		t.Fatalf("all accounts selected=%+v missing=%d", selected, missing)
 	}
+	selected, missing = selectAccountsForRefresh(accounts, []string{" ", ""})
+	if len(selected) != 0 || missing != 0 {
+		t.Fatalf("blank explicit selection refreshed accounts: selected=%+v missing=%d", selected, missing)
+	}
 }
 
 func TestAccountRefreshProgressReportsConcurrentResults(t *testing.T) {
@@ -117,6 +121,48 @@ func TestAccountRefreshProgressRoutesRequireAdmin(t *testing.T) {
 			t.Fatal("refresh progress did not finish")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestAccountRefreshRejectsInvalidExplicitSelection(t *testing.T) {
+	s := &Server{cfg: Config{AuthKey: "admin-key"}, store: NewStore(t.TempDir())}
+	defer s.store.Close()
+	if err := s.store.SaveAccounts([]Account{{AccessToken: "existing-token", Status: "正常"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, path, body string
+		handler          http.HandlerFunc
+	}{
+		{name: "start blank selection", path: "/api/accounts/refresh/start", body: `{"access_tokens":[" "]}`, handler: s.handleAccountsRefreshStart},
+		{name: "sync blank selection", path: "/api/accounts/refresh", body: `{"access_tokens":[" "]}`, handler: s.handleAccountsRefresh},
+		{name: "sync malformed body", path: "/api/accounts/refresh", body: `{broken`, handler: s.handleAccountsRefresh},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			req.Header.Set("Authorization", "Bearer admin-key")
+			rec := httptest.NewRecorder()
+			test.handler(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("invalid selection status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSynchronousAccountRefreshReportsMissingTokens(t *testing.T) {
+	s := &Server{store: NewStore(t.TempDir())}
+	defer s.store.Close()
+	if err := s.store.SaveAccounts([]Account{{AccessToken: "existing-token", Status: "正常"}}); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, failures := s.refreshAccountInfos(context.Background(), []string{"missing-token", " missing-token "})
+	if refreshed != 0 || len(failures) != 1 || failures[0]["token"] != "missing-token" || failures[0]["error"] != "account not found" {
+		t.Fatalf("missing token result: refreshed=%d failures=%v", refreshed, failures)
+	}
+	refreshed, failures = s.refreshAccountInfos(context.Background(), []string{" "})
+	if refreshed != 0 || len(failures) != 0 {
+		t.Fatalf("blank explicit token refreshed all: refreshed=%d failures=%v", refreshed, failures)
 	}
 }
 

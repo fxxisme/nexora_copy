@@ -4,12 +4,102 @@ import { getStoredAuthKey } from "@/store/auth";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
-export type ImageModel = "gpt-image-2" | "codex-gpt-image-2";
+export type ImageModel =
+  | "gpt-image-2"
+  | "gpt-image-2.5"
+  | "gpt-image-2.5-flare"
+  | "gpt-image-2.5-sunburst"
+  | "codex-gpt-image-2";
+
+export type PromptLibraryItem = {
+  id: string;
+  source_id: string;
+  source_name: string;
+  title: string;
+  prompt: string;
+  description: string;
+  preview: string;
+  link: string;
+  author: string;
+  category: string;
+  sub_category: string;
+  tags: string[];
+  reference_image_urls: string[];
+  image_mode: "" | "generate" | "edit";
+  image_model: string;
+  image_size: string;
+  image_count: number | null;
+  created_at: string;
+};
+
+export type PromptLibrarySource = {
+  id: string;
+  name: string;
+  url: string;
+  homepage: string;
+  enabled: boolean;
+  built_in: boolean;
+  sort_order: number;
+  prompt_count: number;
+  cached: boolean;
+  sync_state: "disabled" | "pending" | "synced" | "cached" | "failed";
+  sync_label: string;
+  sync_message: string;
+  sync_tone: "muted" | "success" | "warning" | "danger";
+  last_sync_at: string;
+  last_error: string;
+  last_fetch_ms: number | null;
+};
+
+export type PromptLibraryView = {
+  schema_version: 1;
+  generated_at: string;
+  revision: string;
+  registry_revision: string;
+  registry_generated_at: string;
+  synced: boolean;
+  prompt_count: number;
+  source_count: number;
+  enabled_source_count: number;
+  cached_source_count: number;
+  source_error_count: number;
+  sync_summary: {
+    status: "success" | "partial" | "failed";
+    tone: "success" | "warning" | "danger";
+    total: number;
+    succeeded: number;
+    failed: number;
+    message: string;
+  };
+  source_errors: Array<{ id: string; name: string; error: string }>;
+  items: PromptLibraryItem[];
+  sources: PromptLibrarySource[];
+};
+
+export async function fetchPromptLibrary() {
+  return httpRequest<PromptLibraryView>("/api/prompts");
+}
+
+export async function refreshPromptSources(sourceId?: string) {
+  const path = sourceId
+    ? `/api/admin/prompt-sources/${encodeURIComponent(sourceId)}/refresh`
+    : "/api/admin/prompt-sources/refresh";
+  return httpRequest<PromptLibraryView>(path, { method: "POST" });
+}
+
+export async function updatePromptSource(sourceId: string, enabled: boolean) {
+  return httpRequest<PromptLibraryView>(`/api/admin/prompt-sources/${encodeURIComponent(sourceId)}`, {
+    method: "POST",
+    body: { enabled },
+  });
+}
 export type AuthRole = "admin" | "user";
 export type AccountTier = "free" | "premium";
 
 export type Account = {
   access_token: string;
+  group_id?: string;
+  proxy?: string;
   type: AccountType;
   source_type?: "web" | "codex" | string;
   export_type?: string;
@@ -18,7 +108,13 @@ export type Account = {
   quota: number;
   initial_quota?: number;
   image_quota_unknown?: boolean;
+  trial_state?: "eligible" | "discount" | "subscribed" | "not-eligible" | "unknown";
+  trial_promo_id?: string;
+  trial_promo_label?: string;
+  trial_checked_at?: string;
   email?: string | null;
+  mfa_status?: "enabled" | "pending" | "failed";
+  mfa_secret?: string | null;
   user_id?: string | null;
   limits_progress?: Array<{
     feature_name?: string;
@@ -208,6 +304,26 @@ export type SystemLog = {
   [key: string]: unknown;
 };
 
+export type DashboardRange = "24h" | "7d" | "30d";
+export type DashboardResponse = {
+  accounts: {
+    total: number;
+    statuses: Record<string, number>;
+    remaining_quota: number;
+    unknown_quota: number;
+  };
+  range: DashboardRange;
+  buckets: Array<{ time: string; success: number; failed: number; models: Record<string, number> }>;
+};
+
+export async function fetchDashboard(range: DashboardRange) {
+  const result = await httpRequest<DashboardResponse>(`/api/dashboard?range=${range}`);
+  if (!result || !Array.isArray(result.buckets) || !result.accounts || !result.accounts.statuses) {
+    throw new Error("概览接口尚未生效，请重启 Go 服务");
+  }
+  return result;
+}
+
 export type ImageResponse = {
   created: number;
   data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
@@ -215,11 +331,20 @@ export type ImageResponse = {
 
 export type ImageTask = {
   id: string;
-  status: "queued" | "running" | "success" | "error" | "canceled";
+  status: "queued" | "running" | "success" | "partial_success" | "error" | "canceled";
+  terminal?: boolean;
   mode: "generate" | "edit";
   model?: ImageModel;
   size?: string;
   resolution?: string;
+  stage_code?: string;
+  stage_label?: string;
+  requested_count?: number;
+  succeeded_count?: number;
+  failed_count?: number;
+  pending_count?: number;
+  duration_ms?: number;
+  elapsed_ms?: number;
   created_at: string;
   updated_at: string;
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
@@ -325,6 +450,7 @@ export type RegisterConfig = {
     request_timeout: number;
     wait_timeout: number;
     wait_interval: number;
+    api_use_register_proxy: boolean;
     providers: Array<Record<string, unknown>>;
   };
   proxy: string;
@@ -357,6 +483,12 @@ export type RegisterConfig = {
     text: string;
     level: string;
   }>;
+  failures?: Array<{
+    time: string;
+    job_id: string;
+    task: number;
+    reason: string;
+  }>;
 };
 
 export async function login(authKey: string) {
@@ -375,6 +507,13 @@ export async function fetchAccounts() {
   return httpRequest<AccountListResponse>("/api/accounts");
 }
 
+export async function fetchAccountMFACode(accessToken: string) {
+  return httpRequest<{ code: string; expires_in: number }>("/api/accounts/mfa/code", {
+    method: "POST",
+    body: { access_token: accessToken },
+  });
+}
+
 export async function createAccounts(tokens: string[], sourceType = "web", accountRecords: AccountImportRecord[] = []) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
@@ -383,13 +522,9 @@ export async function createAccounts(tokens: string[], sourceType = "web", accou
 }
 
 export async function deleteAccounts(tokens: string[]) {
-  return deleteAccountsWithOptions(tokens);
-}
-
-export async function deleteAccountsWithOptions(tokens: string[], deleteMailboxes = false) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "DELETE",
-    body: { tokens, delete_mailboxes: deleteMailboxes },
+    body: { tokens },
   });
 }
 
@@ -417,6 +552,8 @@ export async function updateAccount(
     type?: AccountType;
     status?: AccountStatus;
     quota?: number;
+    proxy?: string;
+    group_id?: string;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {
@@ -425,6 +562,41 @@ export async function updateAccount(
       access_token: accessToken,
       ...updates,
     },
+  });
+}
+
+export async function updateAccountsGroup(accessTokens: string[], groupID: string) {
+  return httpRequest<{ updated: number; items: Account[] }>("/api/accounts/update", {
+    method: "POST",
+    body: { access_tokens: accessTokens, group_id: groupID },
+  });
+}
+
+export type AccountGroup = {
+  id: string;
+  name: string;
+  proxy: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function fetchAccountGroups() {
+  return httpRequest<{ groups: AccountGroup[] }>("/api/account-groups");
+}
+
+export async function saveAccountGroup(payload: { id?: string; name: string; proxy: string; enabled: boolean }) {
+  return httpRequest<{ group: AccountGroup }>("/api/account-groups", { method: "POST", body: payload });
+}
+
+export async function deleteAccountGroup(id: string) {
+  return httpRequest<{ deleted_id: string }>(`/api/account-groups/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function updateAccountsStatus(accessTokens: string[], status: "正常" | "禁用") {
+  return httpRequest<{ updated: number; items: Account[] }>("/api/accounts/update", {
+    method: "POST",
+    body: { access_tokens: accessTokens, status },
   });
 }
 
@@ -983,6 +1155,46 @@ export type ProxyTestResult = {
   error: string | null;
 };
 
+export type ProxyNode = {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  image_concurrency_limit: number;
+  notes: string;
+  health: { state: "unknown" | "healthy" | "unhealthy"; checked_at?: string; latency_ms?: number; error?: string };
+  success_count: number;
+  fail_count: number;
+};
+
+export type ProxyNodeImportResult = {
+  nodes: Array<{ url: string; image_concurrency_limit: number }>;
+  added_count: number;
+  duplicate_count: number;
+  invalid_count: number;
+  invalid_items: Array<{ line: number; raw: string; reason: string }>;
+};
+
+export type ProxyGroup = {
+  id: string;
+  name: string;
+  strategy: "request_random" | "time_window" | "round_robin";
+  rotation_interval_minutes: number;
+  enabled: boolean;
+  notes: string;
+  nodes: ProxyNode[];
+  health: { state: "unknown" | "healthy" | "unhealthy" };
+};
+
+export type ProxyReference = { mode: "direct" | "group" | "custom"; group_id: string; url: string };
+export type ProxyView = {
+  schema_version: number;
+  generated_at: string;
+  default_reference: ProxyReference;
+  fallback_reference: ProxyReference | null;
+  groups: ProxyGroup[];
+};
+
 export async function fetchProxy() {
   return httpRequest<{ proxy: ProxySettings }>("/api/proxy");
 }
@@ -999,6 +1211,45 @@ export async function testProxy(url?: string) {
     method: "POST",
     body: { url: url ?? "" },
   });
+}
+
+export async function fetchProxyGroups() {
+  return httpRequest<{ groups: ProxyGroup[] }>("/api/proxy/groups");
+}
+
+export async function fetchProxyView() {
+  return httpRequest<ProxyView>("/api/proxy/view");
+}
+
+export async function saveProxyDefaults(payload: { default_reference: ProxyReference; fallback_reference: ProxyReference | null }) {
+  return httpRequest<{ default_reference: ProxyReference; fallback_reference: ProxyReference | null }>("/api/proxy/defaults", { method: "POST", body: payload });
+}
+
+export async function saveProxyGroup(payload: {
+  id?: string;
+  name: string;
+  strategy: ProxyGroup["strategy"];
+  rotation_interval_minutes: number;
+  enabled: boolean;
+  notes?: string;
+  nodes: Array<{ id?: string; name?: string; url: string; enabled?: boolean; image_concurrency_limit?: number; notes?: string }>;
+}) {
+  return httpRequest<{ group: ProxyGroup }>("/api/proxy/groups", { method: "POST", body: payload });
+}
+
+export async function deleteProxyGroup(id: string) {
+  return httpRequest<{ deleted_id: string }>(`/api/proxy/groups/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function testProxyGroup(payload: { id?: string; node_id?: string; url?: string }) {
+  return httpRequest<{
+    summary: { status: "success" | "partial" | "failed"; total: number; succeeded: number; failed: number; message: string };
+    results: Array<{ node_id: string; result: ProxyTestResult }>;
+  }>("/api/proxy/groups/test", { method: "POST", body: payload });
+}
+
+export async function importProxyNodes(payload: { text: string; existing_urls: string[] }) {
+  return httpRequest<ProxyNodeImportResult>("/api/proxy/nodes/import", { method: "POST", body: payload });
 }
 
 /* ───────── 公共画廊 ───────── */

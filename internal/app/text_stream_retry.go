@@ -35,27 +35,54 @@ func (s *Server) streamTextWithRetryMode(ctx context.Context, messages []map[str
 			token := account.AccessToken
 			traceLogf(ctx, "│  ├─ selected text account %s", accountLabel(account))
 			excluded[token] = true
-			client, err := NewUpstreamClientForAccount(account, s.cfg.Proxy, s.ensureCurlImpersonateBinary)
+			client, err := s.newUpstreamClientForAccount(account)
 			if err != nil {
 				errs <- err
 				return
 			}
-			var events <-chan UpstreamTextEvent
-			var streamErrs <-chan error
-			if historyDisabled {
-				events, streamErrs = client.StreamTextConversationEvents(ctx, messages, model, conversationID)
-			} else {
-				events, streamErrs = client.StreamChatConversationEvents(ctx, messages, model, conversationID)
-			}
 			emitted := false
-			for ev := range events {
-				ev.AccountToken = token
-				if ev.Delta != "" {
-					emitted = true
+			runStream := func(current *UpstreamClient) error {
+				var events <-chan UpstreamTextEvent
+				var streamErrs <-chan error
+				if historyDisabled {
+					events, streamErrs = current.StreamTextConversationEvents(ctx, messages, model, conversationID)
+				} else {
+					events, streamErrs = current.StreamChatConversationEvents(ctx, messages, model, conversationID)
 				}
-				out <- ev
+				for ev := range events {
+					ev.AccountToken = token
+					if ev.Delta != "" {
+						emitted = true
+					}
+					out <- ev
+				}
+				return <-streamErrs
 			}
-			err = <-streamErrs
+			err = runStream(client)
+			attemptedRoutes := map[string]bool{client.proxyRoute.URL: true}
+			for canRetryTextProxyPreflight(ctx, client, err, emitted) {
+				sibling, siblingErr := s.newGroupSiblingUpstreamClientForAccount(account, client.proxyRoute, attemptedRoutes)
+				if siblingErr != nil {
+					traceLogf(ctx, "│  ├─ text group sibling unavailable: %v", siblingErr)
+					break
+				}
+				if sibling == nil {
+					break
+				}
+				client = sibling
+				attemptedRoutes[client.proxyRoute.URL] = true
+				traceLogf(ctx, "│  ├─ retry text preflight with group sibling")
+				err = runStream(client)
+			}
+			if shouldRetryTextWithFallback(ctx, account, client, err, emitted) {
+				fallback, fallbackErr := s.newFallbackUpstreamClientForAccount(account, client.proxyRoute)
+				if fallbackErr != nil {
+					traceLogf(ctx, "│  ├─ text fallback unavailable: %v", fallbackErr)
+				} else if fallback != nil {
+					traceLogf(ctx, "│  ├─ retry text preflight with fallback outlet")
+					err = runStream(fallback)
+				}
+			}
 			s.accountPool.releaseToken(token)
 			if err == nil {
 				traceLogf(ctx, "└─ text account attempt %d success", attempt)
@@ -74,6 +101,15 @@ func (s *Server) streamTextWithRetryMode(ctx context.Context, messages []map[str
 		}
 	}()
 	return out, errs
+}
+
+func shouldRetryTextWithFallback(ctx context.Context, account Account, client *UpstreamClient, err error, emitted bool) bool {
+	return account.Proxy == "" && client != nil && !client.proxyRoute.Bound && canRetryTextProxyPreflight(ctx, client, err, emitted)
+}
+
+func canRetryTextProxyPreflight(ctx context.Context, client *UpstreamClient, err error, emitted bool) bool {
+	return err != nil && ctx.Err() == nil && client != nil && client.proxyRoute.URL != "" &&
+		!client.textConversationStarted && !emitted && isProxyConnectionFailure(err)
 }
 
 func (s *Server) collectTextWithRetry(ctx context.Context, messages []map[string]any, model string) (string, error) {

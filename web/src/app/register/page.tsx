@@ -1,8 +1,43 @@
 "use client";
 
-import { LoaderCircle } from "lucide-react";
+import { useEffect } from "react";
+import { AlertTriangle, LoaderCircle } from "lucide-react";
 
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import { useSettingsStore } from "@/app/settings/store";
+
+import { RegisterCard } from "./components/register-card";
+
+function RegisterPageContent() {
+  const loadRegister = useSettingsStore((state) => state.loadRegister);
+  const registerConfig = useSettingsStore((state) => state.registerConfig);
+  const enabled = useSettingsStore((state) => state.registerConfig?.enabled);
+  const running = useSettingsStore((state) => state.registerConfig?.stats?.running ?? 0);
+
+  useEffect(() => {
+    void loadRegister();
+  }, [loadRegister]);
+
+  useEffect(() => {
+    if (!enabled && running === 0) return;
+    const timer = window.setInterval(() => void loadRegister(true), 3000);
+    return () => window.clearInterval(timer);
+  }, [enabled, running, loadRegister]);
+
+  return (
+    <main className="mx-auto w-full max-w-7xl space-y-5 px-4 py-6 sm:px-6">
+      <h1 className="text-2xl font-semibold text-foreground">自动注册</h1>
+      {registerConfig && (!registerConfig.mail || !registerConfig.stats) ? (
+        <div className="flex items-start gap-3 border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <p>当前 Go 进程仍在使用旧版注册接口。重启服务后刷新此页。</p>
+        </div>
+      ) : (
+        <RegisterCard />
+      )}
+    </main>
+  );
+}
 
 export default function RegisterPage() {
   const { isCheckingAuth, session } = useAuthGuard(["admin"]);
@@ -15,13 +50,5 @@ export default function RegisterPage() {
     );
   }
 
-  return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-12">
-      <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">Disabled Feature</p>
-      <h1 className="text-3xl font-semibold tracking-tight text-stone-950">注册机已移除</h1>
-      <p className="text-sm leading-6 text-stone-500">
-        Go 版本按当前部署要求不再包含注册机功能。请在「号池管理」中手动导入已有账号。
-      </p>
-    </main>
-  );
+  return <RegisterPageContent />;
 }

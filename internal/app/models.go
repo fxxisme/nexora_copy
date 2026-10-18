@@ -37,7 +37,9 @@ func (s *Server) mergeDynamicModels(result map[string]any) map[string]any {
 		}
 	}
 	if hasWeb {
-		add("gpt-image-2")
+		for _, model := range webImageModels {
+			add(model)
+		}
 	}
 	if codexTypes["plus"] || codexTypes["team"] || codexTypes["pro"] {
 		add("codex-gpt-image-2")

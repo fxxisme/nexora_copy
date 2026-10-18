@@ -236,8 +236,10 @@ type SettingsStore = {
   setRegisterCheckInterval: (value: string) => void;
   setRegisterFixedPassword: (value: string) => void;
   setRegisterMailField: (key: "request_timeout" | "wait_timeout" | "wait_interval", value: string) => void;
+  setRegisterMailProxy: (enabled: boolean) => void;
   addRegisterProvider: () => void;
   updateRegisterProvider: (index: number, updates: Record<string, unknown>) => void;
+  replaceRegisterProvider: (index: number, provider: Record<string, unknown>) => void;
   deleteRegisterProvider: (index: number) => void;
   saveRegister: () => Promise<void>;
   toggleRegister: () => Promise<void>;
@@ -698,6 +700,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } : {});
   },
 
+  setRegisterMailProxy: (enabled) => {
+    set((state) => state.registerConfig ? {
+      registerConfig: {
+        ...state.registerConfig,
+        mail: { ...state.registerConfig.mail, api_use_register_proxy: enabled },
+      },
+    } : {});
+  },
+
   addRegisterProvider: () => {
     set((state) => state.registerConfig ? {
       registerConfig: {
@@ -718,6 +729,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       if (!state.registerConfig) return {};
       const providers = [...(state.registerConfig.mail.providers || [])];
       providers[index] = { ...(providers[index] || {}), ...updates };
+      return { registerConfig: { ...state.registerConfig, mail: { ...state.registerConfig.mail, providers } } };
+    });
+  },
+
+  replaceRegisterProvider: (index, provider) => {
+    set((state) => {
+      if (!state.registerConfig) return {};
+      const providers = [...(state.registerConfig.mail.providers || [])];
+      providers[index] = provider;
       return { registerConfig: { ...state.registerConfig, mail: { ...state.registerConfig.mail, providers } } };
     });
   },

@@ -40,8 +40,10 @@ export function RegisterCard() {
   const setCheckInterval = useSettingsStore((state) => state.setRegisterCheckInterval);
   const setFixedPassword = useSettingsStore((state) => state.setRegisterFixedPassword);
   const setMailField = useSettingsStore((state) => state.setRegisterMailField);
+  const setMailProxy = useSettingsStore((state) => state.setRegisterMailProxy);
   const addProvider = useSettingsStore((state) => state.addRegisterProvider);
   const updateProvider = useSettingsStore((state) => state.updateRegisterProvider);
+  const replaceProvider = useSettingsStore((state) => state.replaceRegisterProvider);
   const deleteProvider = useSettingsStore((state) => state.deleteRegisterProvider);
   const save = useSettingsStore((state) => state.saveRegister);
   const toggle = useSettingsStore((state) => state.toggleRegister);
@@ -52,6 +54,7 @@ export function RegisterCard() {
   const configSectionRef = useRef<HTMLElement | null>(null);
   const logViewportRef = useRef<HTMLDivElement | null>(null);
   const logs = config?.logs || [];
+  const failures = config?.failures || [];
 
   // 展开后把整个配置面板的底部滚到视口里。等一帧让 DOM 先渲染完，
   // 否则 scrollIntoView 拿到的是没展开前的位置。
@@ -109,6 +112,10 @@ export function RegisterCard() {
     { label: "额度", value: stats.current_quota || 0, tone: "muted" },
   ];
   const updateProviderType = (index: number, type: string) => {
+    if (type === "icloud_api") {
+      replaceProvider(index, { type, enable: true, api_base: "http://127.0.0.1:8787", api_key: "", project: "openai" });
+      return;
+    }
     updateProvider(index, {
       type,
       enable: true,
@@ -312,6 +319,23 @@ export function RegisterCard() {
         </div>
       </section>
 
+      <section className="border-y border-border py-4">
+        <h2 className="mb-3 text-sm font-semibold text-foreground">注册失败记录</h2>
+        {failures.length === 0 ? (
+          <p className="text-sm text-muted-foreground">暂无记录</p>
+        ) : (
+          <div className="max-h-72 overflow-y-auto border border-border">
+            {[...failures].reverse().map((item, index) => (
+              <div key={`${item.job_id}-${item.task}-${index}`} className="border-b border-border px-3 py-2 text-xs last:border-b-0 sm:flex sm:gap-4">
+                <span className="shrink-0 tabular-nums text-muted-foreground">{new Date(item.time).toLocaleString()}</span>
+                <span className="shrink-0 text-muted-foreground">任务{item.task}</span>
+                <span className="min-w-0 break-all text-rose-600">{item.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section
         ref={configSectionRef}
         className="overflow-hidden rounded-xl border border-border bg-card shadow-sm"
@@ -449,6 +473,11 @@ export function RegisterCard() {
               </div>
             </div>
 
+            <label className="flex items-center gap-2.5 text-sm text-foreground">
+              <Checkbox checked={config.mail.api_use_register_proxy ?? true} onCheckedChange={(checked) => setMailProxy(Boolean(checked))} disabled={config.enabled} />
+              <span>邮箱 API 使用注册代理</span>
+            </label>
+
             <div className="space-y-3">
               {providers.map((provider, index) => {
                 const type = String(provider.type || "tempmail_lol");
@@ -481,15 +510,29 @@ export function RegisterCard() {
                             <SelectItem value="gptmail">gptmail(未测试)</SelectItem>
                             <SelectItem value="yyds_mail">yyds_mail</SelectItem>
                             <SelectItem value="cloudmail">cloudmail</SelectItem>
+                            <SelectItem value="icloud_api">iCloud Privacy Mail API</SelectItem>
+                            {(type === "icloud_alias" || type === "icloud") ? <SelectItem value={type} disabled>旧 iCloud 别名（需切换）</SelectItem> : null}
                           </SelectContent>
                         </Select>
                       </div>
-                      {type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "cloudmail" ? (
+                      {type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "cloudmail" || type === "icloud_api" ? (
                         <>
                           <div className="space-y-1.5">
                             <label className="font-data text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">API Base</label>
-                            <Input value={String(provider.api_base || "")} onChange={(event) => updateProvider(index, { api_base: event.target.value })} placeholder={type === "cloudmail" ? "https://your-cloudmail.com/api" : ""} className="h-10 rounded-lg border-border bg-background font-data text-[13px]" disabled={config.enabled} />
+                            <Input value={String(provider.api_base || "")} onChange={(event) => updateProvider(index, { api_base: event.target.value })} placeholder={type === "icloud_api" ? "http://127.0.0.1:8787" : type === "cloudmail" ? "https://your-cloudmail.com" : ""} className="h-10 rounded-lg border-border bg-background font-data text-[13px]" disabled={config.enabled} />
                           </div>
+                          {type === "icloud_api" ? (
+                            <>
+                              <div className="space-y-1.5">
+                                <label className="font-data text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">全局 API Key</label>
+                                <Input type="password" value={String(provider.api_key || "")} onChange={(event) => updateProvider(index, { api_key: event.target.value })} className="h-10 rounded-lg border-border bg-background font-data text-[13px]" disabled={config.enabled} autoComplete="off" />
+                              </div>
+                              <div className="space-y-1.5">
+                                <label className="font-data text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">项目标识</label>
+                                <Input value={String(provider.project || "openai")} onChange={(event) => updateProvider(index, { project: event.target.value })} className="h-10 rounded-lg border-border bg-background font-data text-[13px]" disabled={config.enabled} />
+                              </div>
+                            </>
+                          ) : null}
                           {type === "cloudflare_temp_email" ? (
                             <div className="space-y-1.5">
                               <label className="font-data text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">Admin Password</label>

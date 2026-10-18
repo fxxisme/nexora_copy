@@ -134,7 +134,7 @@ func selectAccountsForRefresh(accounts []Account, tokens []string) ([]Account, i
 			want[token] = true
 		}
 	}
-	all := len(want) == 0
+	all := len(tokens) == 0
 	selected := []Account{}
 	for _, account := range accounts {
 		if all || want[account.AccessToken] {
@@ -158,7 +158,7 @@ func (s *Server) runAccountRefreshJob(ctx context.Context, id string, accounts [
 			label = fmt.Sprintf("账号 #%d", index+1)
 		}
 		message := err.Error()
-		for _, secret := range []string{account.AccessToken, ptrString(account.RefreshToken), ptrString(account.IDToken), ptrString(account.Password), s.cfg.Proxy} {
+		for _, secret := range []string{account.AccessToken, ptrString(account.RefreshToken), ptrString(account.IDToken), ptrString(account.Password), account.Proxy, s.cfg.Proxy} {
 			if secret != "" {
 				message = strings.ReplaceAll(message, secret, "[redacted]")
 			}

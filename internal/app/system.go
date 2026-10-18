@@ -1,15 +1,23 @@
 package app
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	"golang.org/x/net/proxy"
 )
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +36,28 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Extra[k] = v
 		}
 		if v, ok := body["proxy"]; ok {
-			s.cfg.Proxy = strAny(v, "")
+			proxy := strings.TrimSpace(strAny(v, ""))
+			if proxy != "" {
+				var err error
+				proxy, err = normalizeProxyURL(proxy)
+				if err != nil {
+					writeErr(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+			if proxy != s.cfg.Proxy && s.store != nil {
+				if err := s.store.SaveProxyDefaults(proxyReference{Mode: "custom", URL: proxy}, nil); err != nil {
+					writeErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+			s.cfg.Proxy = proxy
+		}
+		if v, ok := body["sentinel_solver_url"]; ok {
+			s.cfg.SentinelSolverURL = strings.TrimRight(strings.TrimSpace(strAny(v, "")), "/")
+		}
+		if v, ok := body["sentinel_solver_key"]; ok {
+			s.cfg.SentinelSolverKey = strings.TrimSpace(strAny(v, ""))
 		}
 		if v, ok := body["base_url"]; ok {
 			s.cfg.BaseURL = strings.TrimRight(strAny(v, ""), "/")
@@ -67,17 +96,29 @@ func (s *Server) handleStorageInfo(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"backend": map[string]any{"type": "json", "description": "本地 JSON 文件存储", "file_path": s.store.path("accounts.json"), "auth_keys_file_path": s.store.path("auth_keys.json"), "gallery_file_path": s.store.path("gallery.json")}, "health": map[string]any{"status": "healthy", "backend": "json"}})
+	backend := map[string]any{"type": s.store.backend, "description": "SQL 数据库存储"}
+	if s.store.backend == "sqlite" {
+		backend["file_path"] = s.store.dsn
+	}
+	health := "healthy"
+	if err := s.store.db.PingContext(r.Context()); err != nil {
+		health = "unhealthy"
+	}
+	writeJSON(w, 200, map[string]any{"backend": backend, "health": map[string]any{"status": health, "backend": s.store.backend}})
 }
 func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	transport := "curl-impersonate"
-	bin := strings.TrimSpace(os.Getenv("CHATGPT2API_CURL_IMPERSONATE_BIN"))
-	if bin == "" {
-		if p, err := s.ensureCurlImpersonateBinary(); err == nil {
-			bin = p
+	transport := "tls-client"
+	bin := ""
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CHATGPT2API_UPSTREAM_TRANSPORT")), "curl-impersonate") {
+		transport = "curl-impersonate"
+		bin = strings.TrimSpace(os.Getenv("CHATGPT2API_CURL_IMPERSONATE_BIN"))
+		if bin == "" {
+			if p, err := s.ensureCurlImpersonateBinary(); err == nil {
+				bin = p
+			}
 		}
 	}
 	binOK := false
@@ -86,7 +127,11 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 			binOK = true
 		}
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "version": s.version(), "storage": "json", "transport": transport, "curl_impersonate_bin": bin, "curl_impersonate_executable": binOK, "accounts": len(s.store.LoadAccounts()), "tasks": len(s.store.LoadTasks())})
+	status := map[string]any{"ok": true, "version": s.version(), "storage": s.store.backend, "transport": transport, "curl_impersonate_bin": bin, "curl_impersonate_executable": binOK, "accounts": len(s.store.LoadAccounts()), "tasks": len(s.store.LoadTasks())}
+	if s.imageTasks != nil {
+		status["image_task_runner"] = s.imageTaskRunnerStatus()
+	}
+	writeJSON(w, 200, status)
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +139,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		writeJSON(w, 200, map[string]any{"proxy": map[string]any{"url": s.cfg.Proxy, "enabled": s.cfg.Proxy != ""}})
+		proxy, err := s.selectedProxy()
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"proxy": map[string]any{"url": proxy, "enabled": proxy != ""}})
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -102,37 +152,404 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if !readBody(w, r, &b) {
 			return
 		}
-		s.cfg.Proxy = strAny(b["url"], strAny(b["proxy"], s.cfg.Proxy))
-		s.cfg.Extra["proxy"] = s.cfg.Proxy
+		proxy := strings.TrimSpace(strAny(b["url"], strAny(b["proxy"], s.cfg.Proxy)))
+		if proxy != "" {
+			var err error
+			proxy, err = normalizeProxyURL(proxy)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if s.store != nil {
+			if err := s.store.SaveProxyDefaults(proxyReference{Mode: "custom", URL: proxy}, nil); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		s.cfg.Proxy = proxy
+		if s.cfg.Extra == nil {
+			s.cfg.Extra = map[string]any{}
+		}
+		s.cfg.Extra["proxy"] = proxy
 		_ = s.saveConfig()
-		writeJSON(w, 200, map[string]any{"proxy": map[string]any{"url": s.cfg.Proxy, "enabled": s.cfg.Proxy != ""}})
+		writeJSON(w, 200, map[string]any{"proxy": map[string]any{"url": proxy, "enabled": proxy != ""}})
 		return
 	}
 	writeErr(w, 405, "method not allowed")
 }
+
+func (s *Server) handleProxyView(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	groups, err := s.store.LoadProxyGroups()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取代理组失败："+err.Error())
+		return
+	}
+	defaults, err := s.store.LoadProxyDefaults()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取代理默认配置失败："+err.Error())
+		return
+	}
+	defaultRef := defaults.Default
+	if defaultRef.Mode == "" {
+		defaultRef = proxyReference{Mode: "custom", URL: s.cfg.Proxy}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"schema_version": 1, "generated_at": nowISO(), "default_reference": defaultRef, "fallback_reference": defaults.Fallback, "groups": groups})
+}
+
+func (s *Server) handleProxyDefaults(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method == http.MethodGet {
+		defaults, err := s.store.LoadProxyDefaults()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取代理默认配置失败："+err.Error())
+			return
+		}
+		if defaults.Default.Mode == "" {
+			defaults.Default = proxyReference{Mode: "custom", URL: s.cfg.Proxy}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"default_reference": defaults.Default, "fallback_reference": defaults.Fallback})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		DefaultReference  proxyReference  `json:"default_reference"`
+		FallbackReference *proxyReference `json:"fallback_reference"`
+	}
+	if !readBody(w, r, &body) {
+		return
+	}
+	if err := s.store.SaveProxyDefaults(body.DefaultReference, body.FallbackReference); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.DefaultReference.Mode == "custom" {
+		defaults, err := s.store.LoadProxyDefaults()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.cfg.Proxy = defaults.Default.URL
+		if s.cfg.Extra == nil {
+			s.cfg.Extra = map[string]any{}
+		}
+		s.cfg.Extra["proxy"] = s.cfg.Proxy
+		_ = s.saveConfig()
+	}
+	defaults, _ := s.store.LoadProxyDefaults()
+	writeJSON(w, http.StatusOK, map[string]any{"default_reference": defaults.Default, "fallback_reference": defaults.Fallback})
+}
+
+func (s *Server) handleProxyGroups(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method == http.MethodGet {
+		groups, err := s.store.LoadProxyGroups()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取代理组失败："+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var input proxyGroupInput
+	if !readBody(w, r, &input) {
+		return
+	}
+	group, err := s.store.SaveProxyGroup(input)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": group})
+}
+
+func (s *Server) handleProxyGroupID(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/proxy/groups/"))
+	if id == "" || strings.Contains(id, "/") {
+		writeErr(w, http.StatusBadRequest, "代理组 ID 无效")
+		return
+	}
+	if err := s.store.DeleteProxyGroup(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, "代理组不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "删除代理组失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted_id": id})
+}
+
+func (s *Server) handleProxyGroupTest(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		ID     string `json:"id"`
+		NodeID string `json:"node_id"`
+		URL    string `json:"url"`
+	}
+	if !readBody(w, r, &body) {
+		return
+	}
+	type target struct{ nodeID, url string }
+	targets := make([]target, 0)
+	if rawURL := strings.TrimSpace(body.URL); rawURL != "" {
+		targets = append(targets, target{url: rawURL})
+	} else {
+		if strings.TrimSpace(body.ID) == "" {
+			writeErr(w, http.StatusBadRequest, "需要代理组 ID 或代理地址")
+			return
+		}
+		groups, err := s.store.LoadProxyGroups()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取代理组失败："+err.Error())
+			return
+		}
+		found := false
+		for _, group := range groups {
+			if group.ID != body.ID {
+				continue
+			}
+			found = true
+			for _, node := range group.Nodes {
+				if node.Enabled && (body.NodeID == "" || node.ID == body.NodeID) {
+					targets = append(targets, target{nodeID: node.ID, url: node.URL})
+				}
+			}
+			break
+		}
+		if !found {
+			writeErr(w, http.StatusNotFound, "代理组不存在")
+			return
+		}
+	}
+	if len(targets) == 0 {
+		writeErr(w, http.StatusBadRequest, "没有找到可测试的启用节点")
+		return
+	}
+	type item struct {
+		NodeID string         `json:"node_id"`
+		Result map[string]any `json:"result"`
+	}
+	results := make([]item, len(targets))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(len(targets), 8) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				if r.Context().Err() != nil {
+					return
+				}
+				results[index] = item{NodeID: targets[index].nodeID, Result: s.testProxyURL(r, targets[index].url)}
+			}
+		}()
+	}
+enqueue:
+	for index := range targets {
+		select {
+		case <-r.Context().Done():
+			break enqueue
+		case jobs <- index:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	if r.Context().Err() != nil {
+		return
+	}
+	succeeded, failed := 0, 0
+	maxLatency := int64(0)
+	updates := make([]proxyNodeHealthUpdate, 0, len(results))
+	for index, result := range results {
+		if r.Context().Err() != nil {
+			return
+		}
+		if result.Result["ok"] == true {
+			succeeded++
+		} else {
+			failed++
+		}
+		if latency, ok := result.Result["latency_ms"].(int64); ok && latency > maxLatency {
+			maxLatency = latency
+		}
+		if result.NodeID != "" {
+			var latency *int64
+			if value, ok := result.Result["latency_ms"].(int64); ok {
+				latency = &value
+			}
+			state := "unhealthy"
+			healthErr := strAny(result.Result["error"], "")
+			if result.Result["ok"] == true {
+				state, healthErr = "healthy", ""
+			}
+			updates = append(updates, proxyNodeHealthUpdate{NodeID: result.NodeID, URL: targets[index].url, State: state, LatencyMS: latency, Error: healthErr})
+		}
+	}
+	if len(updates) > 0 {
+		if err := s.store.setProxyNodeHealthBatch(r.Context(), updates); err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "保存代理节点状态失败："+err.Error())
+			return
+		}
+	}
+	status := "failed"
+	if succeeded == len(results) {
+		status = "success"
+	} else if succeeded > 0 {
+		status = "partial"
+	}
+	message := fmt.Sprintf("测试完成：成功 %d，失败 %d", succeeded, failed)
+	writeJSON(w, http.StatusOK, map[string]any{"summary": map[string]any{"status": status, "tone": map[string]string{"success": "success", "partial": "warning", "failed": "danger"}[status], "total": len(results), "succeeded": succeeded, "failed": failed, "max_latency_ms": maxLatency, "label": message, "message": message}, "results": results})
+}
+
+func (s *Server) testProxyURL(r *http.Request, raw string) map[string]any {
+	started := time.Now()
+	result := map[string]any{"ok": false, "status": 0, "latency_ms": int64(0), "error": nil}
+	defer func() { result["latency_ms"] = time.Since(started).Milliseconds() }()
+	normalized, err := normalizeProxyURL(raw)
+	if err != nil {
+		result["error"] = err.Error()
+		return result
+	}
+	proxyURL, _ := url.Parse(normalized)
+	target := "https://chatgpt.com/backend-api/me"
+	upstreamClient, err := newUpstreamHTTPClient(normalized, s.ensureCurlImpersonateBinary)
+	if err != nil {
+		result["error"] = redactProxyTransportError(err, normalized).Error()
+		return result
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodGet, target, nil)
+	if err != nil {
+		result["error"] = err.Error()
+		return result
+	}
+	req.Header.Set("User-Agent", upstreamUserAgent())
+	resp, err := upstreamClient.Do(req)
+	if err == nil {
+		defer resp.Body.Close()
+		result["status"] = resp.StatusCode
+		result["ok"] = resp.StatusCode > 0 && resp.StatusCode < 500
+		result["message"] = resp.Status
+		if !result["ok"].(bool) {
+			result["error"] = resp.Status
+		}
+		return result
+	}
+
+	// The ordinary HTTPS probe only distinguishes a target-specific failure.
+	transport := &http.Transport{}
+	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
+		var auth *proxy.Auth
+		if proxyURL.User != nil {
+			auth = &proxy.Auth{User: proxyURL.User.Username()}
+			auth.Password, _ = proxyURL.User.Password()
+		}
+		dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, auth, proxy.Direct)
+		if err != nil {
+			result["error"] = err.Error()
+			return result
+		}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialer.Dial(network, address)
+		}
+	} else {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+	result["error"] = diagnoseProxyFailure(ctx, client, err, normalized)
+	return result
+}
+
+func diagnoseProxyFailure(ctx context.Context, client *http.Client, upstreamErr error, proxyURL string) string {
+	message := upstreamErr.Error()
+	if parsed, err := url.Parse(proxyURL); err == nil && parsed.User != nil {
+		message = strings.ReplaceAll(message, parsed.User.String()+"@", "***@")
+		message = strings.ReplaceAll(message, parsed.User.String(), "***")
+	}
+	if strings.Contains(message, "407") || strings.Contains(strings.ToLower(message), "proxy authentication required") {
+		return "代理认证失败（HTTP 407）"
+	}
+	if !strings.Contains(strings.ToLower(message), "reset") && !strings.Contains(strings.ToLower(message), "eof") {
+		return message
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		return message
+	}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+			return "代理可访问普通 HTTPS，但连接 chatgpt.com 失败：" + message
+		}
+	}
+	return message
+}
+
 func (s *Server) handleProxyTest(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	target := "https://chatgpt.com/backend-api/me"
-	client := &http.Client{Timeout: 15 * time.Second}
-	if strings.TrimSpace(s.cfg.Proxy) != "" {
-		proxyURL, err := url.Parse(s.cfg.Proxy)
-		if err != nil {
-			writeJSON(w, 200, map[string]any{"result": map[string]any{"ok": false, "message": err.Error()}})
-			return
-		}
-		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-	}
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		writeJSON(w, 200, map[string]any{"result": map[string]any{"ok": false, "message": err.Error()}})
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	defer resp.Body.Close()
-	ok := resp.StatusCode > 0 && resp.StatusCode < 500
-	writeJSON(w, 200, map[string]any{"result": map[string]any{"ok": ok, "status": resp.StatusCode, "message": resp.Status}})
+	var body struct {
+		URL string `json:"url"`
+	}
+	if !readBody(w, r, &body) {
+		return
+	}
+	proxy := strings.TrimSpace(body.URL)
+	if proxy == "" {
+		var err error
+		proxy, err = s.selectedProxy()
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"result": map[string]any{"ok": false, "status": 0, "latency_ms": int64(0), "error": err.Error()}})
+			return
+		}
+	}
+	if proxy == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"result": map[string]any{"ok": false, "status": 0, "latency_ms": int64(0), "error": "未配置代理地址"}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": s.testProxyURL(r, proxy)})
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
