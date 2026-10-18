@@ -1,51 +1,55 @@
 {
+  "ai_review": {
+    "api_key": "",
+    "base_url": "",
+    "enabled": false,
+    "model": "",
+    "prompt": ""
+  },
   "auth-key": "chatgpt2api",
-  "refresh_account_interval_minute": 60,
-  "image_retention_days": 15,
-  "image_poll_timeout_secs": 120,
-  "image_poll_interval_secs": 4,
-  "image_poll_initial_wait_secs": 0,
-  "auto_remove_rate_limited_accounts": false,
   "auto_remove_invalid_accounts": true,
+  "auto_remove_rate_limited_accounts": false,
+  "backup": {
+    "access_key_id": "",
+    "account_id": "",
+    "bucket": "",
+    "enabled": false,
+    "encrypt": false,
+    "include": {
+      "accounts_snapshot": true,
+      "auth_keys_snapshot": true,
+      "chat_conversations_snapshot": true,
+      "config": true,
+      "cpa": true,
+      "image_tasks": true,
+      "images": false,
+      "logs": true,
+      "register": true,
+      "sub2api": true
+    },
+    "interval_minutes": 1440,
+    "passphrase": "",
+    "prefix": "backups",
+    "provider": "cloudflare_r2",
+    "rotation_keep": 10,
+    "secret_access_key": ""
+  },
+  "base_url": "",
+  "cleanup_protect_gallery": false,
+  "cleanup_protect_user_images": false,
+  "global_system_prompt": "",
+  "image_account_concurrency": 1,
+  "image_poll_initial_wait_secs": 0,
+  "image_poll_interval_secs": 4,
+  "image_poll_timeout_secs": 120,
+  "image_retention_days": 15,
   "log_levels": [
     "error",
     "info",
     "warning"
   ],
-  "proxy": "",
-  "base_url": "",
+  "proxy": "http://127.0.0.1:7897",
+  "refresh_account_interval_minute": 60,
   "sensitive_words": [],
-  "global_system_prompt": "",
-  "ai_review": {
-    "enabled": false,
-    "base_url": "",
-    "api_key": "",
-    "model": "",
-    "prompt": ""
-  },
-  "backup": {
-    "enabled": false,
-    "provider": "cloudflare_r2",
-    "account_id": "",
-    "access_key_id": "",
-    "secret_access_key": "",
-    "bucket": "",
-    "prefix": "backups",
-    "interval_minutes": 1440,
-    "rotation_keep": 10,
-    "encrypt": false,
-    "passphrase": "",
-    "include": {
-      "config": true,
-      "register": true,
-      "cpa": true,
-      "sub2api": true,
-      "logs": true,
-      "image_tasks": true,
-      "accounts_snapshot": true,
-      "auth_keys_snapshot": true,
-      "images": false
-    }
-  },
-  "image_account_concurrency": 3
+  "sentinel_solver_url": ""
 }
