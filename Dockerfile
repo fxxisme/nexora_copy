@@ -22,7 +22,7 @@ WORKDIR /app
 RUN adduser -D -H app && mkdir -p /app/data /app/web_dist && chown -R app:app /app
 COPY --from=go-build /out/nexora /app/nexora
 COPY --from=web-build /app/web/out /app/web_dist
-COPY config.json VERSION ./
+COPY VERSION ./
 USER app
 EXPOSE 80
 ENV CHATGPT2API_ADDR=:80

@@ -244,7 +244,7 @@ curl -fsSL https://raw.githubusercontent.com/zoreAI/nexora/main/scripts/install_
 bash scripts/install_latest.sh
 ```
 
-脚本会尽量保留已安装目录中的 `config.json` 和 `data/`。安装后按提示运行：
+脚本会保留已安装目录中的 `config.json` 和 `data/`。首次安装后先设置 `config.json` 中的 `auth-key`，或导出 `CHATGPT2API_AUTH_KEY`，再按提示运行：
 
 ```bash
 cd ./nexora-install
@@ -274,9 +274,36 @@ docker build -t nexora .
 docker run --rm \
   -p 3000:80 \
   -v "$PWD/data:/app/data" \
-  -e CHATGPT2API_AUTH_KEY=chatgpt2api \
+  -e CHATGPT2API_AUTH_KEY='replace-with-your-key' \
   nexora
 ```
+
+镜像不包含本地 `config.json`。也可以将配置文件挂载到 `/app/config.json`；绑定的 `data/` 目录需要允许容器内非 root 用户写入。使用 `docker-compose.yml` 时需先准备根目录 `config.json`，再运行 `docker compose up -d --build`。
+
+## 部署与升级
+
+源码部署需要 `go.mod` 指定的 Go 版本和 Node.js 22。首次部署先设置 `config.json` 中的 `auth-key`，或设置环境变量 `CHATGPT2API_AUTH_KEY`，然后执行：
+
+```bash
+make web
+go test ./...
+./start.sh --build --port 3000
+```
+
+使用发布包时，解压后按上文创建 `config.json`，直接运行 `./start.sh --port 3000`；发布包已包含后端二进制和 `web_dist/`，无需在目标机器安装 Go 或 Node.js。
+
+升级前先停止旧进程。在安装目录中备份运行数据和配置：
+
+```bash
+backup_dir="../nexora-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+cp -a data "$backup_dir/"
+if [ -f config.json ]; then cp -a config.json "$backup_dir/"; fi
+```
+
+SQLite 的数据库及其 WAL 文件都在 `data/` 中；账号密码、2FA 密钥、邮箱 provider 配置和注册状态也保存在数据库。不要让新旧版本同时写入同一个数据库。更新程序和前端后重新启动，访问 `http://localhost:3000/` 确认页面正常，再在管理面板检查账号池与注册配置。升级失败时先停止新进程，恢复旧程序和前端，再恢复同一份备份中的 `data/` 与 `config.json`，最后启动旧版本。
+
+旧版 `data/*.json` 和 `logs.jsonl` 只会在新数据库首次初始化时导入；导入失败会阻止启动，旧文件仍保留。使用 PostgreSQL 时先备份数据库，再升级程序，`DATABASE_URL` 必须指向预期实例。Docker 部署需持续挂载 `/app/data`；容器内服务监听 `:80`，示例映射到宿主机 `3000` 端口。
 
 ### 本地开发运行
 
@@ -375,6 +402,8 @@ config.json
 |---|---|
 | `CHATGPT2API_AUTH_KEY` | 覆盖 `config.json` 中的 `auth-key` |
 | `CHATGPT2API_ADDR` | 服务监听地址，例如 `:3000` |
+| `DATABASE_URL` | PostgreSQL 连接串，或 `sqlite:///绝对路径/数据库文件.db`；不设置时使用 `data/chatgpt2api.db` |
+| `STORAGE_BACKEND` | 可选 `sqlite` 或 `postgres`；设置 `DATABASE_URL` 时会按 URL 自动选择 |
 | `CHATGPT2API_UPSTREAM_TRANSPORT` | 上游传输方式，支持 `tls-client`、`curl-impersonate` |
 | `CHATGPT2API_CURL_IMPERSONATE_BIN` | 指定 `curl-impersonate` 二进制路径 |
 | `CHATGPT2API_CURL_IMPERSONATE_URL` | 指定 `curl-impersonate` 下载地址 |

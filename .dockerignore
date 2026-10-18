@@ -1,11 +1,17 @@
 .git
 .gitignore
+.codex
+.DS_Store
 .idea
 .venv
 __pycache__
 *.pyc
 *.pyo
 *.pyd
+config.json
+data
+static
+release
 
 web/.next
 web/node_modules

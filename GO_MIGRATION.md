@@ -7,7 +7,7 @@
 - 保留 `web/` Next.js 前端，生产环境由 Go 后端直接服务 `web_dist/`。
 - 默认使用 SQLite，支持通过 PostgreSQL `DATABASE_URL` 切换数据库。
 - 旧业务 JSON 文件首次启动时导入数据库，原件保留作备份；图片仍存放在 `data/images/`。
-- 移除注册机真实逻辑，相关接口返回 disabled 状态，避免前端页面崩溃。
+- 注册任务、邮箱 provider 和账号 2FA 已接入；注册成功后账号与密码、2FA 状态存入数据库。启动前需在管理面板配置可用的邮箱 provider。
 - 移除 Cloudflare R2 备份真实逻辑，备份接口返回 disabled/空列表。
 - 保留管理面板核心端点：账号、用户密钥、设置、日志、图片管理、画廊、图片任务、聊天会话。
 - 保留 OpenAI/Anthropic 兼容端点：`/v1/models`、`/v1/images/*`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`。
@@ -60,8 +60,10 @@ make run
 
 ```bash
 docker build -t nexora .
-docker run --rm -p 3000:80 -v "$PWD/data:/app/data" -e CHATGPT2API_AUTH_KEY=chatgpt2api nexora
+docker run --rm -p 3000:80 -v "$PWD/data:/app/data" -e CHATGPT2API_AUTH_KEY='replace-with-your-key' nexora
 ```
+
+镜像不包含本地 `config.json`。也可以挂载配置文件到 `/app/config.json`；`/app/data` 需对容器内 `app` 用户可写。完整的升级和备份步骤见 [README 部署说明](README.md#部署与升级)。
 
 ## 数据库存储
 
