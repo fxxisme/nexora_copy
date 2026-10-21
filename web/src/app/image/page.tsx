@@ -22,9 +22,12 @@ import {
   createImageEditTask,
   createImageGenerationTask,
   cancelImageTasks,
+  fetchImageModels,
   fetchImageTasks,
   fetchMyIdentity,
   publishGalleryItem,
+  type AvailableImageModel,
+  type ImageModel,
   type ImageTask,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -48,6 +51,7 @@ const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_i
 const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
 const IMAGE_RESOLUTION_STORAGE_KEY = "chatgpt2api:image_last_resolution";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
+const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const HIGH_RESOLUTION_VALUES = new Set(["2k", "4k"]);
 // 每个会话的滚动位置单独存。用 sessionStorage 因为这就是"会话级"的临时位置，
 // 关浏览器后从底部重看更自然；要跨浏览器会话保留改成 localStorage 即可。
@@ -405,6 +409,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageCount, setImageCount] = useState("1");
   const [imageSize, setImageSize] = useState("");
   const [imageResolution, setImageResolution] = useState("");
+  const [availableModels, setAvailableModels] = useState<AvailableImageModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("gpt-image-2");
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
@@ -564,6 +570,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         setImageSize(storedSize || "");
         setImageResolution(storedResolution || "");
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
+        const storedModel = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
+        if (storedModel) {
+          setSelectedModel(storedModel);
+        }
 
         // 滚动位置表只在浏览器侧、首次进入时加载一次
         if (typeof window !== "undefined") {
@@ -830,6 +840,34 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       window.localStorage.setItem(IMAGE_COUNT_STORAGE_KEY, String(parsedCount));
     }
   }, [parsedCount]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchImageModels()
+      .then((models) => {
+        if (cancelled || !models || models.length === 0) return;
+        setAvailableModels(models);
+        setSelectedModel((current) => {
+          const exists = models.some((m) => m.id === current);
+          if (!exists && models.length > 0) {
+            return models[0].id;
+          }
+          return current;
+        });
+      })
+      .catch(() => {
+        // 请求失败时静默，保留默认
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && selectedModel) {
+      window.localStorage.setItem(IMAGE_MODEL_STORAGE_KEY, selectedModel);
+    }
+  }, [selectedModel]);
 
   useEffect(() => {
     if (selectedConversationId && !conversations.some((conversation) => conversation.id === selectedConversationId)) {
@@ -1244,6 +1282,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
     setImageSize(turn.size);
     setImageResolution(!canUseHighResolution && isHighResolution(turn.resolution) ? "" : turn.resolution || "");
+    if (turn.model) {
+      setSelectedModel(turn.model);
+    }
     setReferenceImages(turn.referenceImages);
     setReferenceImageFiles(
       turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
@@ -1616,7 +1657,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     const draftTurn: ImageTurn = {
       id: turnId,
       prompt,
-      model: "gpt-image-2",
+      model: (selectedModel || "gpt-image-2") as ImageModel,
       mode: effectiveImageMode,
       referenceImages: effectiveImageMode === "edit" ? referenceImages : [],
       count: parsedCount,
@@ -1801,6 +1842,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               imageCount={imageCount}
               imageSize={imageSize}
               imageResolution={imageResolution}
+              availableModels={availableModels}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
               canUseHighResolution={canUseHighResolution}
               availableQuota={availableQuota}
               activeTaskCount={activeTaskCount}

@@ -1,5 +1,5 @@
 "use client";
-import { ArrowUp, BookOpen, Check, ChevronDown, CornerDownRight, ImagePlus, Infinity as InfinityIcon, X } from "lucide-react";
+import { ArrowUp, BookOpen, Check, ChevronDown, CornerDownRight, ImagePlus, Infinity as InfinityIcon, Sparkles, X } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -14,6 +14,7 @@ import {
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import type { AvailableImageModel } from "@/lib/api";
 
 const COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -48,6 +49,9 @@ type ImageComposerProps = {
   imageCount: string;
   imageSize: string;
   imageResolution: string;
+  availableModels?: AvailableImageModel[];
+  selectedModel?: string;
+  onModelChange?: (value: string) => void;
   canUseHighResolution: boolean;
   availableQuota: string;
   activeTaskCount: number;
@@ -72,6 +76,9 @@ export function ImageComposer({
   imageCount,
   imageSize,
   imageResolution,
+  availableModels,
+  selectedModel = "gpt-image-2",
+  onModelChange,
   canUseHighResolution,
   availableQuota,
   activeTaskCount,
@@ -98,6 +105,10 @@ export function ImageComposer({
   const [resolutionMenuPos, setResolutionMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [isCountMenuOpen, setIsCountMenuOpen] = useState(false);
   const [countMenuPos, setCountMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const [modelMenuPos, setModelMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelMenuBtnRef = useRef<HTMLButtonElement>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const dragCounterRef = useRef(0);
   const sizeMenuRef = useRef<HTMLDivElement>(null);
@@ -110,7 +121,13 @@ export function ImageComposer({
     () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: image.dataUrl })),
     [referenceImages],
   );
-  const selectedSize = SIZE_OPTIONS.find((option) => option.value === imageSize) ?? SIZE_OPTIONS[0];
+  const currentModel = availableModels?.find((m) => m.id === selectedModel) ?? {
+    id: selectedModel,
+    name: selectedModel,
+    desc: "",
+    sourceType: "",
+  };
+    const selectedSize = SIZE_OPTIONS.find((option) => option.value === imageSize) ?? SIZE_OPTIONS[0];
   const selectedResolution = RESOLUTION_OPTIONS.find((option) => option.value === imageResolution) ?? RESOLUTION_OPTIONS[0];
   const parsedCount = Math.max(1, Math.min(8, Number(imageCount) || 1));
   const isResolutionDisabled = (value: string) => !canUseHighResolution && (value === "2k" || value === "4k");
@@ -172,6 +189,21 @@ export function ImageComposer({
       window.removeEventListener("mousedown", handlePointerDown);
     };
   }, [isCountMenuOpen]);
+
+  useEffect(() => {
+    if (!isModelMenuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!modelMenuRef.current?.contains(event.target as Node)) {
+        setIsModelMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [isModelMenuOpen]);
 
   const handleTextareaPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
@@ -402,6 +434,100 @@ export function ImageComposer({
                       <span className="font-data tabular-nums text-stone-900">{availableQuota}</span>
                     )}
                   </span>
+                  <div className="relative shrink-0">
+                    <button
+                      ref={modelMenuBtnRef}
+                      type="button"
+                      className={cn(
+                        "inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition sm:h-10 sm:gap-2 sm:px-4 sm:text-[13px]",
+                        isModelMenuOpen
+                          ? "bg-stone-900 text-white"
+                          : "bg-stone-100 text-stone-700 hover:bg-stone-200",
+                      )}
+                      onClick={() => {
+                        if (!isModelMenuOpen && modelMenuBtnRef.current) {
+                          const rect = modelMenuBtnRef.current.getBoundingClientRect();
+                          const menuWidth = Math.min(260, window.innerWidth - 32);
+                          setModelMenuPos({
+                            top: rect.top - 8,
+                            left: Math.max(16, Math.min(rect.left, window.innerWidth - menuWidth - 16)),
+                          });
+                        }
+                        setIsModelMenuOpen((open) => !open);
+                      }}
+                    >
+                      <Sparkles className="size-3.5 opacity-60 sm:size-4" />
+                      <span className={cn("hidden sm:inline", isModelMenuOpen ? "text-white/70" : "text-stone-500")}>模型</span>
+                      <span className="max-w-[100px] truncate sm:max-w-[130px] font-medium">{currentModel.name || currentModel.id}</span>
+                      <ChevronDown
+                        className={cn(
+                          "size-3.5 shrink-0 opacity-60 transition",
+                          isModelMenuOpen && "rotate-180",
+                        )}
+                      />
+                    </button>
+                    {isModelMenuOpen ? (
+                      <div
+                        ref={modelMenuRef}
+                        className="fixed z-[80] max-h-[55dvh] overflow-y-auto rounded-2xl border border-border/80 bg-popover text-popover-foreground p-1.5 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
+                        style={{
+                          top: modelMenuPos.top,
+                          left: modelMenuPos.left,
+                          transform: "translateY(-100%)",
+                          width: "min(260px, calc(100vw - 2rem))",
+                        }}
+                      >
+                        <div className="mb-1 px-2 pt-1 text-[11px] font-medium text-stone-400">选择生图模型</div>
+                        {(availableModels && availableModels.length > 0 ? availableModels : [
+                          { id: "gpt-image-2", name: "GPT Image 2", desc: "标准高质量生图模型", sourceType: "web" },
+                          { id: "gpt-image-2.5", name: "GPT Image 2.5", desc: "新一代绘图模型，效果与指令遵循更佳", sourceType: "web" }
+                        ]).map((option) => {
+                          const active = option.id === selectedModel;
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              className={cn(
+                                "flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left transition",
+                                active ? "bg-stone-900 text-white" : "text-foreground hover:bg-secondary",
+                              )}
+                              onClick={() => {
+                                onModelChange?.(option.id);
+                                setIsModelMenuOpen(false);
+                              }}
+                            >
+                              <div className="flex min-w-0 flex-1 flex-col">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[13px] font-medium">{option.name}</span>
+                                  {option.sourceType ? (
+                                    <span
+                                      className={cn(
+                                        "rounded px-1 py-0.5 text-[9px] uppercase font-mono tracking-tight",
+                                        active ? "bg-white/20 text-white" : "bg-stone-100 text-stone-500",
+                                      )}
+                                    >
+                                      {option.sourceType}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {option.desc ? (
+                                  <span
+                                    className={cn(
+                                      "truncate text-[11px] mt-0.5",
+                                      active ? "text-white/70" : "text-stone-400",
+                                    )}
+                                  >
+                                    {option.desc}
+                                  </span>
+                                ) : null}
+                              </div>
+                              {active ? <Check className="size-3.5 shrink-0 ml-1.5" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                   <div className="relative shrink-0">
                     <button
                       ref={countMenuBtnRef}

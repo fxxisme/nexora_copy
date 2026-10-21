@@ -601,3 +601,38 @@ func (s *Server) handleImageTagDelete(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.SaveTags(tags)
 	writeJSON(w, 200, map[string]any{"ok": true, "removed_from": n})
 }
+
+func (s *Server) handleImageModels(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireIdentity(w, r); !ok {
+		return
+	}
+	accounts := s.store.LoadAccounts()
+	hasWeb := false
+	codexTypes := map[string]bool{}
+	for _, a := range accounts {
+		if a.AccessToken == "" || a.Status == "禁用" || a.Status == "异常" {
+			continue
+		}
+		if strings.ToLower(a.SourceType) == "codex" {
+			codexTypes[strings.ToLower(a.Type)] = true
+		} else {
+			hasWeb = true
+		}
+	}
+
+	items := []map[string]any{}
+	if hasWeb || len(accounts) == 0 {
+		items = append(items,
+			map[string]any{"id": "gpt-image-2", "name": "GPT Image 2", "desc": "经典标准生图", "sourceType": "web"},
+			map[string]any{"id": "gpt-image-2.5", "name": "GPT Image 2.5", "desc": "最新一代生图模型", "sourceType": "web"},
+			map[string]any{"id": "gpt-image-2.5-flare", "name": "GPT Image 2.5 Flare", "desc": "细节构图增强版", "sourceType": "web"},
+			map[string]any{"id": "gpt-image-2.5-sunburst", "name": "GPT Image 2.5 Sunburst", "desc": "色彩光影增强版", "sourceType": "web"},
+		)
+	}
+	if codexTypes["plus"] || codexTypes["team"] || codexTypes["pro"] {
+		items = append(items,
+			map[string]any{"id": "codex-gpt-image-2", "name": "Codex Image 2 (超清)", "desc": "Codex 专有通道，原生 2K/4K", "sourceType": "codex"},
+		)
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}

@@ -410,6 +410,9 @@ export function ImageResults({
                     <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px] text-stone-500 sm:mb-4 sm:gap-2 sm:text-xs">
                       <span className="rounded-full bg-stone-100 px-3 py-1">{turn.count} 张</span>
                       <span className="rounded-full bg-stone-100 px-3 py-1">{getTurnStatusLabel(turn.status)}</span>
+                      {turn.model ? (
+                        <span className="rounded-full bg-stone-100 px-3 py-1 font-mono text-[11px] text-stone-600">{turn.model}</span>
+                      ) : null}
                       {turn.status === "queued" ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-stone-100 px-3 py-1 text-stone-500">
                           <Clock3 className="size-3 text-stone-400" />

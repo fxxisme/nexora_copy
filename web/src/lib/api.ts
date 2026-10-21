@@ -651,6 +651,18 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   );
 }
 
+export type AvailableImageModel = {
+  id: string;
+  name: string;
+  desc: string;
+  sourceType?: string;
+};
+
+export async function fetchImageModels(): Promise<AvailableImageModel[]> {
+  const resp = await httpRequest<{ items: AvailableImageModel[] }>("/api/image/models");
+  return resp?.items || [];
+}
+
 export async function createImageGenerationTask(
   clientTaskId: string,
   prompt: string,
@@ -1522,4 +1534,5 @@ export async function* streamChat(
     try { reader.releaseLock(); } catch { /* noop */ }
   }
 }
+
 

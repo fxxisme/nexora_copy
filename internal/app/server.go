@@ -238,6 +238,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/dashboard/", s.handleDashboard)
 	s.mux.HandleFunc("/api/logs/delete", s.handleLogsDelete)
 	s.mux.HandleFunc("/api/images", s.handleImages)
+	s.mux.HandleFunc("/api/image/models", s.handleImageModels)
 	s.mux.HandleFunc("/api/prompts", s.handlePromptLibrary)
 	s.mux.HandleFunc("/api/admin/prompt-sources/refresh", s.handlePromptSourcesRefresh)
 	s.mux.HandleFunc("/api/admin/prompt-sources/", s.handlePromptSource)
@@ -311,4 +312,3 @@ func (s *Server) baseURL(r *http.Request) string {
 	}
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
-
