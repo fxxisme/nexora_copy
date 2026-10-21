@@ -170,7 +170,7 @@ func accountFromRecord(token, source string, rec map[string]any) Account {
 	if strings.EqualFold(strAny(rec["export_type"], ""), "codex") {
 		source = "codex"
 	}
-	if recordSource := strings.ToLower(strings.TrimSpace(strAny(rec["source_type"], ""))); recordSource == "web" || recordSource == "codex" {
+	if recordSource := strings.ToLower(strings.TrimSpace(strAny(rec["source_type"], ""))); recordSource == "web" || recordSource == "codex" || recordSource == "oauth_login" {
 		source = recordSource
 	}
 	status := strings.TrimSpace(strAny(rec["status"], "正常"))

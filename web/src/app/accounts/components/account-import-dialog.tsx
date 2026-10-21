@@ -5,12 +5,14 @@ import { useRef, useState, type ChangeEvent } from "react";
 import {
   ArrowLeft,
   Bot,
+  Copy,
   ExternalLink,
   FileJson,
   FileText,
   Files,
   KeyRound,
   LoaderCircle,
+  LogIn,
   ServerCog,
   Upload,
 } from "lucide-react";
@@ -27,10 +29,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { createAccounts, type Account, type AccountImportRecord } from "@/lib/api";
+import {
+  createAccounts,
+  finishOAuthLogin,
+  startOAuthLogin,
+  type Account,
+  type AccountImportRecord,
+  type OAuthLoginStartResponse,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type ImportMethod = "menu" | "token" | "session" | "cpa";
+type ImportMethod = "menu" | "token" | "session" | "cpa" | "oauth";
 type AccountSourceType = "web" | "codex";
 
 type AccountImportDialogProps = {
@@ -144,6 +153,10 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingCpaImport, setPendingCpaImport] = useState<PendingCpaImport | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [oauthEmailHint, setOauthEmailHint] = useState("");
+  const [oauthSession, setOauthSession] = useState<OAuthLoginStartResponse | null>(null);
+  const [oauthCallbackInput, setOauthCallbackInput] = useState("");
+  const [oauthStarting, setOauthStarting] = useState(false);
 
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const cpaInputRef = useRef<HTMLInputElement | null>(null);
@@ -156,6 +169,10 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     setSourceType("web");
     setPendingCpaImport(null);
     setConfirmOpen(false);
+    setOauthEmailHint("");
+    setOauthSession(null);
+    setOauthCallbackInput("");
+    setOauthStarting(false);
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
@@ -206,6 +223,76 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       toast.error(message);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleStartOAuth = async () => {
+    setOauthStarting(true);
+    try {
+      const data = await startOAuthLogin(oauthEmailHint.trim());
+      setOauthSession(data);
+      setOauthCallbackInput("");
+      if (typeof window !== "undefined") {
+        window.open(data.authorize_url, "_blank", "noopener,noreferrer");
+      }
+      toast.success("已打开 OpenAI 授权页面，请在登录后复制 callback URL 回来");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "OAuth 起始失败";
+      toast.error(message);
+    } finally {
+      setOauthStarting(false);
+    }
+  };
+
+  const handleFinishOAuth = async () => {
+    if (!oauthSession) {
+      toast.error("请先点击\"打开授权页面\"获取 session");
+      return;
+    }
+    const trimmed = oauthCallbackInput.trim();
+    if (!trimmed) {
+      toast.error("请粘贴 callback URL 或 code");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const data = await finishOAuthLogin(oauthSession.session_id, trimmed);
+      onImported(data.items);
+      setOpen(false);
+      resetState();
+
+      if ((data.errors?.length ?? 0) > 0) {
+        const firstError = data.errors?.[0]?.error;
+        toast.error(
+          `OAuth 登录完成，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+        );
+      } else {
+        toast.success(
+          `OAuth 登录完成，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，已自动刷新账号信息`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "OAuth 换 token 失败";
+      toast.error(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCopyAuthorizeUrl = async () => {
+    if (!oauthSession) {
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(oauthSession.authorize_url);
+        toast.success("授权 URL 已复制到剪贴板");
+      } else {
+        toast.error("当前环境不支持自动复制，请手动选择并复制");
+      }
+    } catch {
+      toast.error("复制失败，请手动选择并复制");
     }
   };
 
@@ -355,6 +442,105 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   };
 
   const renderMethodBody = () => {
+    if (method === "oauth") {
+      return (
+        <div className="space-y-4">
+          <button
+            type="button"
+            onClick={() => setMethod("menu")}
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition hover:text-foreground"
+          >
+            <ArrowLeft className="size-4" />
+            返回导入方式
+          </button>
+          <div className="rounded-2xl border border-border bg-muted/40 p-4 text-sm leading-6 text-muted-foreground space-y-2">
+            <div className="font-medium text-foreground">操作步骤</div>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>（可选）填写你 ChatGPT 账号的邮箱，登录页会预填。</li>
+              <li>点击下方"打开授权页面"，在新标签里登录自己的 ChatGPT 账号。</li>
+              <li>登录完成后浏览器会跳到 <code className="rounded bg-muted px-1 font-mono text-xs text-foreground">platform.openai.com/auth/callback?code=...</code>。立刻从地址栏复制整段 URL（或开 F12 在 Network 里抓到 callback 那一行，右键 Copy → Copy URL）。</li>
+              <li>把 callback URL 粘到下面输入框，点"完成导入"。</li>
+            </ol>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">邮箱（可选预填）</label>
+            <input
+              type="email"
+              placeholder="you@example.com"
+              value={oauthEmailHint}
+              onChange={(event) => setOauthEmailHint(event.target.value)}
+              disabled={Boolean(oauthSession) || oauthStarting}
+              className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+            />
+          </div>
+          {!oauthSession ? (
+            <Button
+              type="button"
+              className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"
+              onClick={() => void handleStartOAuth()}
+              disabled={oauthStarting}
+            >
+              {oauthStarting ? <LoaderCircle className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
+              打开授权页面
+            </Button>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-border bg-muted/30 p-3 text-xs leading-6 text-foreground break-all font-mono">
+                {oauthSession.authorize_url}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl border-border bg-card"
+                  onClick={() => void handleCopyAuthorizeUrl()}
+                >
+                  <Copy className="size-4" />
+                  复制授权 URL
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl border-border bg-card"
+                  onClick={() => window.open(oauthSession.authorize_url, "_blank", "noopener,noreferrer")}
+                >
+                  <ExternalLink className="size-4" />
+                  再次打开
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl border-border bg-card"
+                  onClick={() => {
+                    setOauthSession(null);
+                    setOauthCallbackInput("");
+                  }}
+                >
+                  重新生成
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">粘贴 callback URL（或仅 code）</label>
+                <Textarea
+                  placeholder="https://platform.openai.com/auth/callback?code=...&state=..."
+                  value={oauthCallbackInput}
+                  onChange={(event) => setOauthCallbackInput(event.target.value)}
+                  className="min-h-24 resize-none rounded-xl border-border font-mono text-xs"
+                />
+              </div>
+            </div>
+          )}
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm leading-6 text-amber-600 dark:text-amber-400">
+            <div className="font-medium">注意</div>
+            <div>
+              授权码（code）只能使用一次。如果浏览器的 callback 页加载完成、显示了 OpenAI 的错误页，那 code 大概率已经被消耗，
+              请点击"重新生成"再走一次。整个流程在 10 分钟内完成即可。
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     if (method === "token") {
       const tokenCount = splitTokens(tokenInput).length;
 
@@ -556,6 +742,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     return (
       <div className="space-y-3">
         <MethodCard
+          title="OAuth 登录已有账号（带自动刷新）"
+          description="用浏览器登录自己的 ChatGPT 账号，回填 callback URL 即可拿到 refresh_token，后台会自动续期。"
+          icon={LogIn}
+          onClick={() => setMethod("oauth")}
+        />
+        <MethodCard
           title="导入 Access Token"
           description="支持直接粘贴，一行一个；也支持从 TXT 文件读取，一行一个。"
           icon={KeyRound}
@@ -634,6 +826,19 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             >
               取消
             </Button>
+            {method === "oauth" ? (
+              <Button
+                className={cn(
+                  "h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90",
+                  !oauthSession ? "hidden" : "",
+                )}
+                onClick={() => void handleFinishOAuth()}
+                disabled={footerDisabled || !oauthSession || !oauthCallbackInput.trim()}
+              >
+                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                完成导入
+              </Button>
+            ) : null}
             {method === "token" ? (
               <Button
                 className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"

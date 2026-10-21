@@ -40,6 +40,7 @@ type Server struct {
 	accountRefreshJobs  accountRefreshJobs
 	logSvc              *logService
 	register            *registerService
+	oauthLogin          *oauthLoginManager
 }
 
 func NewServer(root string) (*Server, error) {
@@ -90,6 +91,7 @@ func NewServer(root string) (*Server, error) {
 		s.store.Close()
 		return nil, s.register.initErr
 	}
+	s.oauthLogin = newOAuthLoginManager()
 	s.register.server = s
 	if err := s.recoverUnfinishedTasks(); err != nil {
 		s.store.Close()
@@ -214,6 +216,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/users", s.handleAuthUsers)
 	s.mux.HandleFunc("/api/auth/users/", s.handleAuthUserID)
 	s.mux.HandleFunc("/api/accounts", s.handleAccounts)
+	s.mux.HandleFunc("/api/accounts/oauth/start", s.handleOAuthLoginStart)
+	s.mux.HandleFunc("/api/accounts/oauth/finish", s.handleOAuthLoginFinish)
 	s.mux.HandleFunc("/api/accounts/refresh", s.handleAccountsRefresh)
 	s.mux.HandleFunc("/api/accounts/refresh/start", s.handleAccountsRefreshStart)
 	s.mux.HandleFunc("/api/accounts/refresh/progress/", s.handleAccountsRefreshProgress)
