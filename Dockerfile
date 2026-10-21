@@ -20,7 +20,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldf
 
 FROM alpine:3.20 AS app
 WORKDIR /app
-RUN adduser -D -H app && mkdir -p /app/data /app/web_dist && chown -R app:app /app
+RUN apk add --no-cache ca-certificates tzdata && \
+    adduser -D -H app && mkdir -p /app/data /app/web_dist && chown -R app:app /app
 COPY --from=go-build /out/nexora /app/nexora
 COPY --from=web-build /app/web/out /app/web_dist
 COPY VERSION ./

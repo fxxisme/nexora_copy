@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
 	"unicode/utf8"
 
 	http "github.com/bogdanfinn/fhttp"
@@ -2245,9 +2246,12 @@ func (c *UpstreamClient) timezoneInfo() (string, int, *time.Location) {
 		name = localTimezoneName()
 	}
 	location, err := time.LoadLocation(name)
-	if err != nil {
+	if err != nil || location == nil {
 		name = "Asia/Shanghai"
-		location, _ = time.LoadLocation(name)
+		location, err = time.LoadLocation(name)
+		if err != nil || location == nil {
+			location = time.FixedZone("CST", 8*3600)
+		}
 	}
 	_, offsetSeconds := time.Now().In(location).Zone()
 	return name, -offsetSeconds / 60, location
