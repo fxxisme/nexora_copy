@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { QuotaPopover } from "@/components/quota-popover";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { clearAuthSessionCache, getValidatedAuthSession } from "@/lib/auth-session";
 import { cn } from "@/lib/utils";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
@@ -134,6 +135,7 @@ export function TopNav() {
         <button type="button" aria-label="打开导航" aria-controls="app-sidebar" aria-expanded={mobileOpen} className="grid size-9 shrink-0 place-items-center rounded-md border border-border lg:hidden" onClick={() => setMobileOpen(true)}><Menu className="size-5" /></button>
         <h1 className="min-w-0 flex-1 truncate text-lg font-semibold">{title}</h1>
         {session.role === "user" && <QuotaPopover />}
+        <ThemeToggle />
         <button type="button" title="刷新页面" aria-label="刷新页面" onClick={() => window.location.reload()} className="grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><RefreshCw className="size-4" /></button>
       </header>
     </>

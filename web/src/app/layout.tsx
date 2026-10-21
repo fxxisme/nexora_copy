@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import "./globals.css";
 import { PageTransition } from "@/components/page-transition";
 import { RouteProgress } from "@/components/route-progress";
+import { ThemeProvider, ThemeScript } from "@/components/theme-provider";
 import { TopNav } from "@/components/top-nav";
 
 const inter = Inter({
@@ -28,7 +29,6 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: "#fbfbfd",
 };
 
 export default function RootLayout({
@@ -38,6 +38,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
+      <head>
+        <ThemeScript />
+      </head>
       <body
         className="antialiased font-sans"
         style={{
@@ -45,14 +48,16 @@ export default function RootLayout({
             'var(--font-sans), "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif',
         }}
       >
-        <Toaster position="top-center" richColors offset={48} />
-        <RouteProgress />
-        <TopNav />
-        <main className="app-main h-screen overflow-x-hidden overflow-y-auto px-4 pt-14 pb-2 text-foreground [scrollbar-gutter:stable_both-edges] sm:px-6 lg:px-8">
-          <div className="mx-auto box-border flex max-w-[1600px] flex-col pt-[env(safe-area-inset-top)]">
-            <PageTransition>{children}</PageTransition>
-          </div>
-        </main>
+        <ThemeProvider>
+          <Toaster position="top-center" richColors offset={48} />
+          <RouteProgress />
+          <TopNav />
+          <main className="app-main h-screen overflow-x-hidden overflow-y-auto px-4 pt-14 pb-2 text-foreground [scrollbar-gutter:stable_both-edges] sm:px-6 lg:px-8">
+            <div className="mx-auto box-border flex max-w-[1600px] flex-col pt-[env(safe-area-inset-top)]">
+              <PageTransition>{children}</PageTransition>
+            </div>
+          </main>
+        </ThemeProvider>
       </body>
     </html>
   );

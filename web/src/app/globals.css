@@ -117,6 +117,12 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --status-ok: oklch(0.68 0.16 155);
+  --status-warn: oklch(0.78 0.15 75);
+  --status-error: oklch(0.62 0.22 25);
+  --status-info: oklch(0.6 0.16 240);
+  --grid-line: oklch(1 0 0 / 0.06);
+  color-scheme: dark;
 }
 
 @layer base {
@@ -143,7 +149,7 @@
   }
   html,
   body {
-    background-color: oklch(0.992 0.002 264);
+    background-color: var(--background);
     background-image:
       linear-gradient(var(--grid-line) 1px, transparent 1px),
       linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
@@ -193,6 +199,19 @@
 
   ::-webkit-scrollbar-corner {
     background: transparent;
+  }
+
+  .dark {
+    scrollbar-color: oklch(1 0 0 / 0.2) transparent;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background-color: oklch(1 0 0 / 0.2);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background-color: oklch(1 0 0 / 0.35);
+  }
+  .dark ::-webkit-scrollbar-thumb:active {
+    background-color: oklch(1 0 0 / 0.5);
   }
 }
 
