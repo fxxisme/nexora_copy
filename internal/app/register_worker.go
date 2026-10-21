@@ -1552,16 +1552,18 @@ func (s *registerSession) validateOTPContinueURL(ctx context.Context, deviceID, 
 	rawURL := registerAuthBase + "/api/accounts/email-otp/validate"
 	headers := s.registerCommonJSONHeaders(deviceID, registerAuthBase+"/email-verification")
 	sentinelPresent := false
+	turnstilePresent := false
 	if sentinel, sentinelErr := s.createSentinelToken(ctx, deviceID, "email_otp_validate"); sentinelErr == nil {
 		headers["OpenAI-Sentinel-Token"] = sentinel
 		sentinelPresent = strings.TrimSpace(sentinel) != ""
+		turnstilePresent = strings.Contains(sentinel, `"t":"0.`) || (strings.Contains(sentinel, `"t":"`) && !strings.Contains(sentinel, `"t":""`))
 	}
 	s.lastValidateOTPDebug = registerFlowDebug{
 		Referer:              registerAuthBase + "/email-verification",
 		Flow:                 "email_otp_validate",
 		SOTokenPresent:       strings.TrimSpace(s.sentinelSOToken) != "",
 		SentinelTokenPresent: sentinelPresent,
-		TurnstilePresent:     strings.Contains(sentinel, `"t":"0.`) || (strings.Contains(sentinel, `"t":"`) && !strings.Contains(sentinel, `"t":""`)),
+		TurnstilePresent:     turnstilePresent,
 		AccessFlowIDPresent:  strings.TrimSpace(s.accessFlowID) != "",
 	}
 	text, resp, err := s.requestTextResponse(ctx, stdhttp.MethodPost, rawURL, headers, map[string]any{"code": code}, 200, 302)
