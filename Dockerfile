@@ -11,6 +11,7 @@ COPY web ./
 RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build -- --webpack
 
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-build
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
