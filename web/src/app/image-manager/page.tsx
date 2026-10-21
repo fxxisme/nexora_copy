@@ -77,37 +77,37 @@ function OwnerFilter({
         <Button
           type="button"
           variant="outline"
-          className="h-10 cursor-pointer rounded-xl border-stone-200 bg-white px-3 text-stone-700 hover:bg-stone-50"
+          className="h-10 cursor-pointer rounded-xl border-border bg-card text-foreground hover:bg-accent px-3 text-foreground hover:bg-stone-50"
         >
-          <User className="size-4 text-stone-500" />
+          <User className="size-4 text-muted-foreground" />
           <span className="max-w-[160px] truncate text-[13px]">{buttonLabel}</span>
           {selected ? (
-            <span className="font-data tabular-nums rounded-md bg-stone-100 px-1.5 text-[10px] text-stone-500">
+            <span className="font-data tabular-nums rounded-md bg-stone-100 px-1.5 text-[10px] text-muted-foreground">
               {selected.count}
             </span>
           ) : null}
-          <ChevronDown className="size-3.5 text-stone-400" />
+          <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-64 overflow-hidden rounded-xl border-stone-200 bg-white p-0 shadow-[0_4px_20px_-4px_rgba(15,23,42,0.18)]"
+        className="w-64 overflow-hidden rounded-xl border-border bg-card text-foreground hover:bg-accent p-0 shadow-[0_4px_20px_-4px_rgba(15,23,42,0.18)]"
       >
-        <div className="border-b border-stone-100 p-2">
+        <div className="border-b border-border p-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-stone-400" />
+            <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <input
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索用户"
-              className="h-8 w-full rounded-lg border border-stone-200 bg-white pr-7 pl-7 text-[12.5px] text-stone-700 placeholder:text-stone-400 focus:border-stone-400 focus:outline-none"
+              className="h-8 w-full rounded-lg border border-border bg-card text-foreground hover:bg-accent pr-7 pl-7 text-[12.5px] text-foreground placeholder:text-muted-foreground focus:border-stone-400 focus:outline-none"
             />
             {query ? (
               <button
                 type="button"
                 onClick={() => setQuery("")}
-                className="absolute top-1/2 right-1.5 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-600"
+                className="absolute top-1/2 right-1.5 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-stone-100 hover:text-muted-foreground"
                 title="清除搜索"
               >
                 <X className="size-3" />
@@ -144,9 +144,9 @@ function OwnerFilter({
           ) : null}
           <div className="my-1 h-px bg-stone-100" />
           {realOwners.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-stone-400">还没有用户密钥</div>
+            <div className="px-3 py-6 text-center text-xs text-muted-foreground">还没有用户密钥</div>
           ) : filteredOwners.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-stone-400">没有匹配的用户</div>
+            <div className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的用户</div>
           ) : (
             filteredOwners.map((item) => (
               <OwnerOption
@@ -185,7 +185,7 @@ function OwnerOption({
       type="button"
       onClick={onClick}
       className={`flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left text-sm transition ${
-        selected ? "bg-stone-100 text-stone-900" : "text-stone-700 hover:bg-stone-50"
+        selected ? "bg-stone-100 text-stone-900" : "text-foreground hover:bg-stone-50"
       }`}
     >
       <span className="flex min-w-0 items-center gap-2">
@@ -196,7 +196,7 @@ function OwnerOption({
         >
           <Check className="size-3" />
         </span>
-        <span className={`truncate ${special ? "text-stone-500" : ""}`}>{label}</span>
+        <span className={`truncate ${special ? "text-muted-foreground" : ""}`}>{label}</span>
         {deleted ? (
           <Badge variant="secondary" className="rounded-md bg-rose-50 px-1.5 py-0 text-[10px] text-rose-600">
             已删
@@ -204,7 +204,7 @@ function OwnerOption({
         ) : null}
       </span>
       {hint ? (
-        <span className="font-data tabular-nums shrink-0 text-[11px] text-stone-400">{hint}</span>
+        <span className="font-data tabular-nums shrink-0 text-[11px] text-muted-foreground">{hint}</span>
       ) : null}
     </button>
   );
@@ -645,7 +645,7 @@ function ImageManagerContent() {
     <section className="mt-4 space-y-5 sm:mt-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Images</div>
+          <div className="text-xs font-semibold tracking-[0.18em] text-muted-foreground uppercase">Images</div>
           <h1 className="text-2xl font-semibold tracking-tight">图片管理</h1>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -660,7 +660,7 @@ function ImageManagerContent() {
               setOwnerPickerOpen(false);
             }}
           />
-          <Button variant="outline" onClick={clearFilters} className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700">
+          <Button variant="outline" onClick={clearFilters} className="h-10 rounded-xl border-border bg-card text-foreground hover:bg-accent px-4 text-foreground">
             清除筛选条件
           </Button>
           <Button onClick={() => void loadImages()} disabled={isLoading} className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800">
@@ -676,7 +676,7 @@ function ImageManagerContent() {
 
       {allTags.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-stone-500">
+          <span className="text-xs font-medium text-muted-foreground">
             <Tag className="mr-1 inline size-3.5" />
             标签筛选：
           </span>
@@ -722,13 +722,13 @@ function ImageManagerContent() {
         </div>
       ) : null}
 
-      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+      <Card className="rounded-2xl border-border/80 bg-card shadow-sm">
         <CardContent className="p-0">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 px-5 py-4">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+            <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
               <ImageIcon className="size-4" />
               共 {filteredItems.length} 张
-              {selectedTags.length > 0 ? <span className="text-stone-400">（筛选自 {items.length} 张）</span> : null}
+              {selectedTags.length > 0 ? <span className="text-muted-foreground">（筛选自 {items.length} 张）</span> : null}
               <label className="flex items-center gap-2">
                 <Checkbox checked={currentPageSelected} onCheckedChange={(checked) => togglePaths(currentRows.map(imageKey), Boolean(checked))} />
                 本页全选
@@ -740,14 +740,14 @@ function ImageManagerContent() {
               {selectedPaths.length > 0 ? <span>已选 {selectedPaths.length} 张</span> : null}
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="ghost" className="h-8 rounded-lg px-3 text-stone-500" onClick={() => void loadImages()} disabled={isLoading}>
+              <Button variant="ghost" className="h-8 rounded-lg px-3 text-muted-foreground" onClick={() => void loadImages()} disabled={isLoading}>
                 <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
                 刷新
               </Button>
-              <button type="button" className="text-sm text-stone-500 hover:text-stone-900 disabled:text-stone-300" onClick={() => setSelectedPaths([])} disabled={selectedPaths.length === 0 || isDeleting}>
+              <button type="button" className="text-sm text-muted-foreground hover:text-stone-900 disabled:text-stone-300" onClick={() => setSelectedPaths([])} disabled={selectedPaths.length === 0 || isDeleting}>
                 取消选择
               </button>
-              <Button variant="outline" className="h-8 rounded-lg border-stone-200 bg-white px-3 text-stone-600 hover:bg-stone-50" onClick={() => void handleBatchDownload()} disabled={selectedPaths.length === 0 || isDownloading || isDeleting}>
+              <Button variant="outline" className="h-8 rounded-lg border-border bg-card text-foreground hover:bg-accent px-3 text-muted-foreground hover:bg-stone-50" onClick={() => void handleBatchDownload()} disabled={selectedPaths.length === 0 || isDownloading || isDeleting}>
                 {isDownloading ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
                 下载所选
               </Button>
@@ -763,7 +763,7 @@ function ImageManagerContent() {
               const publishState = publishStates.get(item.rel);
               const publishedBy = publisherNames.get(item.rel);
               return (
-              <div key={item.rel} className="group border-r border-b border-stone-100 p-4 transition hover:bg-stone-50">
+              <div key={item.rel} className="group border-r border-b border-border p-4 transition hover:bg-stone-50">
                 <div className="relative">
                   <button
                     type="button"
@@ -810,10 +810,10 @@ function ImageManagerContent() {
                     <Trash2 className="size-3.5" />
                   </button>
                 </div>
-                <div className="mt-3 space-y-2 text-xs text-stone-500">
+                <div className="mt-3 space-y-2 text-xs text-muted-foreground">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
-                      <span className="flex items-center gap-1 font-medium text-stone-700">
+                      <span className="flex items-center gap-1 font-medium text-foreground">
                         <CalendarDays className="size-3.5" />
                         {item.created_at}
                       </span>
@@ -827,7 +827,7 @@ function ImageManagerContent() {
                         className={`size-8 rounded-lg ${
                           publishState === "published"
                             ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
-                            : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                            : "text-muted-foreground hover:bg-stone-100 hover:text-foreground"
                         }`}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -851,7 +851,7 @@ function ImageManagerContent() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-8 rounded-lg text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                        className="size-8 rounded-lg text-muted-foreground hover:bg-stone-100 hover:text-foreground"
                         onClick={() => void handleSingleDownload(item)}
                         title="下载图片"
                       >
@@ -860,7 +860,7 @@ function ImageManagerContent() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-8 rounded-lg text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                        className="size-8 rounded-lg text-muted-foreground hover:bg-stone-100 hover:text-foreground"
                         onClick={() => {
                           void navigator.clipboard.writeText(item.url);
                           toast.success("图片地址已复制");
@@ -886,10 +886,10 @@ function ImageManagerContent() {
                       return (
                         <Badge
                           variant="outline"
-                          className="gap-0.5 rounded-md border-stone-200 bg-stone-50 px-1.5 py-0 text-[10px] font-medium text-stone-600"
+                          className="gap-0.5 rounded-md border-border bg-muted px-1.5 py-0 text-[10px] font-medium text-muted-foreground"
                           title={`生成者：${display}`}
                         >
-                          <User className="size-2.5 text-stone-400" />
+                          <User className="size-2.5 text-muted-foreground" />
                           <span className="max-w-[88px] truncate">{display}</span>
                         </Badge>
                       );
@@ -910,7 +910,7 @@ function ImageManagerContent() {
                       <PopoverTrigger asChild>
                         <button
                           type="button"
-                          className="inline-flex size-5 items-center justify-center rounded-full border border-dashed border-stone-300 text-stone-400 hover:border-stone-500 hover:text-stone-600"
+                          className="inline-flex size-5 items-center justify-center rounded-full border border-dashed border-stone-300 text-muted-foreground hover:border-stone-500 hover:text-muted-foreground"
                           title="添加标签"
                         >
                           <Plus className="size-3" />
@@ -918,7 +918,7 @@ function ImageManagerContent() {
                       </PopoverTrigger>
                       <PopoverContent align="start" className="w-56 p-2">
                         <div className="space-y-2">
-                          <div className="text-xs font-medium text-stone-500">添加标签</div>
+                          <div className="text-xs font-medium text-muted-foreground">添加标签</div>
                           <div className="flex gap-1">
                             <Input
                               value={tagInput}
@@ -942,7 +942,7 @@ function ImageManagerContent() {
                             </Button>
                           </div>
                           {allTags.filter((t) => !(item.tags ?? []).includes(t)).length > 0 ? (
-                            <div className="flex flex-wrap gap-1 border-t border-stone-100 pt-2">
+                            <div className="flex flex-wrap gap-1 border-t border-border pt-2">
                               {allTags.filter((t) => !(item.tags ?? []).includes(t)).map((tag) => (
                                 <button
                                   key={tag}
@@ -967,16 +967,16 @@ function ImageManagerContent() {
               </div>
             )})}
           </div>
-          <div className="flex items-center justify-end gap-2 border-t border-stone-100 px-4 py-3 text-sm text-stone-500">
+          <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3 text-sm text-muted-foreground">
             <span>第 {safePage} / {pageCount} 页，共 {filteredItems.length} 张</span>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+            <Button variant="outline" size="icon" className="size-9 rounded-lg border-border bg-card text-foreground hover:bg-accent" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
               <ChevronLeft className="size-4" />
             </Button>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>
+            <Button variant="outline" size="icon" className="size-9 rounded-lg border-border bg-card text-foreground hover:bg-accent" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>
               <ChevronRight className="size-4" />
             </Button>
           </div>
-          {!isLoading && filteredItems.length === 0 ? <div className="px-6 py-14 text-center text-sm text-stone-500">没有找到图片</div> : null}
+          {!isLoading && filteredItems.length === 0 ? <div className="px-6 py-14 text-center text-sm text-muted-foreground">没有找到图片</div> : null}
         </CardContent>
       </Card>
 
@@ -985,19 +985,19 @@ function ImageManagerContent() {
           <DialogHeader>
             <DialogTitle className="pr-8">确认删除</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-stone-600">
+          <p className="text-sm text-muted-foreground">
             确定要删除这张图片吗？此操作不可恢复。
           </p>
           {deleteTarget ? (
-            <div className="flex items-center gap-3 overflow-hidden rounded-xl border border-stone-200 bg-stone-50 p-3">
+            <div className="flex items-center gap-3 overflow-hidden rounded-xl border border-border bg-muted p-3">
               <img
                 src={deleteTarget.thumbnail_url || deleteTarget.url}
                 alt=""
                 className="size-16 shrink-0 rounded-lg object-cover"
                 onError={(e) => { if (e.currentTarget.src !== deleteTarget.url) e.currentTarget.src = deleteTarget.url; }}
               />
-              <div className="min-w-0 overflow-hidden text-xs text-stone-500">
-                <div className="truncate font-medium text-stone-700">{deleteTarget.name}</div>
+              <div className="min-w-0 overflow-hidden text-xs text-muted-foreground">
+                <div className="truncate font-medium text-foreground">{deleteTarget.name}</div>
                 <div className="truncate">{deleteTarget.created_at}</div>
                 <div>{formatSize(deleteTarget.size)}</div>
               </div>
@@ -1027,7 +1027,7 @@ function ImageManagerContent() {
           <DialogHeader className="gap-2">
             <DialogTitle>{deleteMode === "filtered" ? "删除匹配结果" : "删除所选图片"}</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-stone-600">
+          <p className="text-sm text-muted-foreground">
             确认删除 {selectedCount} 张图片吗？删除后无法恢复。
           </p>
           <DialogFooter>
@@ -1046,7 +1046,7 @@ function ImageManagerContent() {
           <DialogHeader>
             <DialogTitle>删除标签</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-stone-600">
+          <p className="text-sm text-muted-foreground">
             确定要删除标签 <span className="font-semibold">"{tagDeleteTarget}"</span> 吗？将从所有图片中移除该标签。
           </p>
           <DialogFooter>
@@ -1081,20 +1081,20 @@ function ImageManagerContent() {
         <DialogContent className="max-w-md rounded-2xl">
           <DialogHeader>
             <DialogTitle>发布到画廊</DialogTitle>
-            <DialogDescription className="text-stone-500">
+            <DialogDescription className="text-muted-foreground">
               此图未保留生成时的 prompt，可以补一段描述，或直接留空发布。
             </DialogDescription>
           </DialogHeader>
           {pendingPublish ? (
-            <div className="flex items-center gap-3 overflow-hidden rounded-xl border border-stone-200 bg-stone-50 p-3">
+            <div className="flex items-center gap-3 overflow-hidden rounded-xl border border-border bg-muted p-3">
               <img
                 src={pendingPublish.thumbnail_url || pendingPublish.url}
                 alt=""
                 className="size-16 shrink-0 rounded-lg object-cover"
                 onError={(e) => { if (e.currentTarget.src !== pendingPublish.url) e.currentTarget.src = pendingPublish.url; }}
               />
-              <div className="min-w-0 overflow-hidden text-xs text-stone-500">
-                <div className="truncate font-medium text-stone-700">{pendingPublish.name}</div>
+              <div className="min-w-0 overflow-hidden text-xs text-muted-foreground">
+                <div className="truncate font-medium text-foreground">{pendingPublish.name}</div>
                 <div className="truncate">{pendingPublish.created_at}</div>
               </div>
             </div>
@@ -1141,7 +1141,7 @@ function ImageManagerContent() {
 export default function ImageManagerPage() {
   const { isCheckingAuth, session } = useAuthGuard(["admin"]);
   if (isCheckingAuth || !session || session.role !== "admin") {
-    return <div className="flex min-h-[40vh] items-center justify-center"><LoaderCircle className="size-5 animate-spin text-stone-400" /></div>;
+    return <div className="flex min-h-[40vh] items-center justify-center"><LoaderCircle className="size-5 animate-spin text-muted-foreground" /></div>;
   }
   return <ImageManagerContent />;
 }

@@ -89,16 +89,16 @@ function MethodCard({
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-2xl border border-stone-200 bg-white p-0 text-left transition hover:border-stone-300 hover:bg-stone-50"
+      className="w-full rounded-2xl border border-border bg-card p-0 text-left transition hover:border-foreground/20 hover:bg-accent"
     >
       <Card className="rounded-2xl border-0 bg-transparent shadow-none">
         <CardContent className="flex items-start gap-4 p-4">
-          <div className="rounded-xl bg-stone-100 p-3 text-stone-700">
+          <div className="rounded-xl bg-secondary p-3 text-foreground">
             <Icon className="size-5" />
           </div>
           <div className="space-y-1">
-            <div className="text-sm font-semibold text-stone-900">{title}</div>
-            <div className="text-sm leading-6 text-stone-500">{description}</div>
+            <div className="text-sm font-semibold text-foreground">{title}</div>
+            <div className="text-sm leading-6 text-muted-foreground">{description}</div>
           </div>
         </CardContent>
       </Card>
@@ -294,20 +294,20 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <button
               type="button"
               onClick={() => setMethod("menu")}
-              className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground transition hover:text-foreground"
             >
               <ArrowLeft className="size-4" />
               返回导入方式
             </button>
-            <span className="text-xs text-stone-400">当前识别 {tokenCount} 个 Token</span>
+            <span className="text-xs text-muted-foreground">当前识别 {tokenCount} 个 Token</span>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">Access Token 列表</label>
+            <label className="text-sm font-medium text-foreground">Access Token 列表</label>
             <Textarea
               placeholder="每行一个 Access Token..."
               value={tokenInput}
               onChange={(event) => setTokenInput(event.target.value)}
-              className="min-h-56 resize-none rounded-xl border-stone-200"
+              className="min-h-56 resize-none rounded-xl border-border"
             />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -324,31 +324,31 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                   className={cn(
                     "rounded-xl border p-3 text-left transition",
                     active
-                      ? "border-stone-900 bg-stone-950 text-white"
-                      : "border-stone-200 bg-white text-stone-700 hover:border-stone-300",
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-foreground hover:bg-accent",
                   )}
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold">
                     {item.value === "codex" ? <Bot className="size-4" /> : <KeyRound className="size-4" />}
                     {item.label}
                   </div>
-                  <div className={cn("mt-1 text-xs", active ? "text-white/65" : "text-stone-500")}>
+                  <div className={cn("mt-1 text-xs", active ? "text-white/65" : "text-muted-foreground")}>
                     {item.desc}
                   </div>
                 </button>
               );
             })}
           </div>
-          <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-4">
+          <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
-                <div className="text-sm font-medium text-stone-800">从 TXT 文件导入</div>
-                <div className="text-sm leading-6 text-stone-500">支持 `.txt`，文件内容也是一行一个 Token。</div>
+                <div className="text-sm font-medium text-foreground">从 TXT 文件导入</div>
+                <div className="text-sm leading-6 text-muted-foreground">支持 `.txt`，文件内容也是一行一个 Token。</div>
               </div>
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl border-stone-200 bg-white"
+                className="rounded-xl border-border bg-card"
                 onClick={() => txtInputRef.current?.click()}
                 disabled={isSubmitting}
               >
@@ -374,19 +374,19 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           <button
             type="button"
             onClick={() => setMethod("menu")}
-            className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition hover:text-foreground"
           >
             <ArrowLeft className="size-4" />
             返回导入方式
           </button>
-          <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-stone-600">
+          <div className="rounded-2xl border border-border bg-muted/40 p-4 text-sm leading-6 text-muted-foreground">
             打开
             {" "}
             <a
               href={sessionUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 font-medium text-stone-900 underline underline-offset-4"
+              className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-4"
             >
               {sessionUrl}
               <ExternalLink className="size-3.5" />
@@ -400,12 +400,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             </div>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">Session JSON</label>
+            <label className="text-sm font-medium text-foreground">Session JSON</label>
             <Textarea
               placeholder='粘贴完整 JSON，例如包含 "accessToken" 的对象...'
               value={sessionInput}
               onChange={(event) => setSessionInput(event.target.value)}
-              className="min-h-56 resize-none rounded-xl border-stone-200 font-mono text-xs"
+              className="min-h-56 resize-none rounded-xl border-border font-mono text-xs"
             />
           </div>
         </div>
@@ -418,21 +418,21 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           <button
             type="button"
             onClick={() => setMethod("menu")}
-            className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition hover:text-foreground"
           >
             <ArrowLeft className="size-4" />
             返回导入方式
           </button>
-          <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5">
+          <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-5">
             <div className="space-y-2">
-              <div className="text-sm font-medium text-stone-800">多选本地 CPA JSON 文件</div>
-              <div className="text-sm leading-6 text-stone-500">
+              <div className="text-sm font-medium text-foreground">多选本地 CPA JSON 文件</div>
+              <div className="text-sm leading-6 text-muted-foreground">
                 每个文件应为一个 JSON 对象。系统会保留 `access_token`、`refresh_token`、`id_token` 等凭据字段。
               </div>
             </div>
             <Button
               type="button"
-              className="mt-4 rounded-xl bg-stone-950 text-white hover:bg-stone-800"
+              className="mt-4 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={() => cpaInputRef.current?.click()}
               disabled={isSubmitting}
             >
@@ -449,7 +449,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             onChange={(event) => void handleCpaSelected(event)}
           />
           {pendingCpaImport ? (
-            <div className="rounded-2xl border border-stone-200 bg-white p-4 text-sm leading-6 text-stone-600">
+            <div className="rounded-2xl border border-border bg-card p-4 text-sm leading-6 text-muted-foreground">
               最近一次读取到 {pendingCpaImport.parsedFileCount} 个 Token
               {pendingCpaImport.errorCount > 0 ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功` : ""}。
             </div>
@@ -508,7 +508,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <Button
-          className="h-9 rounded-md bg-stone-950 px-4 text-white hover:bg-stone-800"
+          className="h-9 rounded-md bg-primary px-4 text-primary-foreground hover:bg-primary/90"
           onClick={() => setOpen(true)}
           disabled={disabled}
         >
@@ -542,7 +542,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           <DialogFooter className="pt-2">
             <Button
               variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              className="h-10 rounded-xl bg-secondary px-5 text-secondary-foreground hover:bg-secondary/80"
               onClick={() => setOpen(false)}
               disabled={footerDisabled}
             >
@@ -550,7 +550,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             </Button>
             {method === "token" ? (
               <Button
-                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+                className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"
                 onClick={() => void handleImportTokenText()}
                 disabled={footerDisabled}
               >
@@ -560,7 +560,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             ) : null}
             {method === "session" ? (
               <Button
-                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+                className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"
                 onClick={() => void handleImportSessionJson()}
                 disabled={footerDisabled}
               >
@@ -571,7 +571,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             {method === "cpa" ? (
               <Button
                 className={cn(
-                  "h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800",
+                  "h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90",
                   !pendingCpaImport ? "hidden" : "",
                 )}
                 onClick={() => setConfirmOpen(true)}
@@ -600,14 +600,14 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           <DialogFooter className="pt-2">
             <Button
               variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              className="h-10 rounded-xl bg-secondary px-5 text-secondary-foreground hover:bg-secondary/80"
               onClick={() => setConfirmOpen(false)}
               disabled={isSubmitting}
             >
               返回
             </Button>
             <Button
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+              className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"
               onClick={() =>
                 void submitTokens(
                   pendingCpaImport?.tokens ?? [],

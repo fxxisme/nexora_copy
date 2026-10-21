@@ -90,7 +90,7 @@ const metricCards = [
   { key: "active", label: "正常账户", color: "text-emerald-600", icon: CheckCircle2 },
   { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
   { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
-  { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
+  { key: "disabled", label: "禁用账户", color: "text-muted-foreground", icon: Ban },
   { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
 ] as const;
 
@@ -226,7 +226,7 @@ function TrialBadge({ account }: { account: Account }) {
 }
 
 const TYPE_BADGE_CLASS: Record<string, string> = {
-  Free: "border-stone-200 bg-stone-50 text-stone-700",
+  Free: "border-stone-200 bg-stone-50 text-foreground",
   Plus: "border-blue-200 bg-blue-50 text-blue-700",
   pro: "border-violet-200 bg-violet-50 text-violet-700",
   prolite: "border-emerald-200 bg-emerald-50 text-emerald-700",
@@ -953,9 +953,9 @@ function AccountsPageContent() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">账号组</label>
+              <label className="text-sm font-medium text-foreground">账号组</label>
               <Select value={editAccountGroupID || "none"} onValueChange={(value) => setEditAccountGroupID(value === "none" ? "" : value)}>
-                <SelectTrigger className="h-11 rounded-md border-stone-200 bg-white"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="h-11 rounded-md border-border bg-card text-foreground"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">未分组</SelectItem>
                   {accountGroups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name}{!group.enabled ? "（已停用）" : ""}</SelectItem>)}
@@ -963,9 +963,9 @@ function AccountsPageContent() {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">状态</label>
+              <label className="text-sm font-medium text-foreground">状态</label>
               <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
-                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
+                <SelectTrigger className="h-11 rounded-xl border-border bg-card text-foreground">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -980,9 +980,9 @@ function AccountsPageContent() {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">上游出口</label>
+              <label className="text-sm font-medium text-foreground">上游出口</label>
               <Select value={editProxyMode} onValueChange={(value) => setEditProxyMode(value as typeof editProxyMode)}>
-                <SelectTrigger className="h-11 rounded-md border-stone-200 bg-white"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="h-11 rounded-md border-border bg-card text-foreground"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="inherit">继承账号组或默认出口</SelectItem>
                   <SelectItem value="direct">直连</SelectItem>
@@ -992,7 +992,7 @@ function AccountsPageContent() {
               </Select>
               {editProxyMode === "group" ? (
                 <Select value={editProxyGroupID} onValueChange={setEditProxyGroupID}>
-                  <SelectTrigger className="h-11 rounded-md border-stone-200 bg-white"><SelectValue placeholder="选择代理组" /></SelectTrigger>
+                  <SelectTrigger className="h-11 rounded-md border-border bg-card text-foreground"><SelectValue placeholder="选择代理组" /></SelectTrigger>
                   <SelectContent>
                     {proxyGroups.map((group) => <SelectItem key={group.id} value={group.id} disabled={!group.enabled || !group.nodes.some((node) => node.enabled)}>{group.name}</SelectItem>)}
                   </SelectContent>
@@ -1004,7 +1004,7 @@ function AccountsPageContent() {
           <DialogFooter className="pt-2">
             <Button
               variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-foreground hover:bg-stone-200"
               onClick={() => setEditingAccount(null)}
               disabled={isUpdating}
             >
@@ -1045,7 +1045,7 @@ function AccountsPageContent() {
       <section className="pt-4">
         <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[220px] flex-1 sm:max-w-sm">
-              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-stone-400" />
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
                 onChange={(event) => {
@@ -1507,25 +1507,25 @@ function AccountsPageContent() {
 
             {!isLoading && currentRows.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-                <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
+                <div className="rounded-xl bg-stone-100 p-3 text-muted-foreground">
                   <Search className="size-5" />
                 </div>
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-stone-700">没有匹配的账户</p>
-                  <p className="text-sm text-stone-500">调整筛选条件或搜索关键字后重试。</p>
+                  <p className="text-sm font-medium text-foreground">没有匹配的账户</p>
+                  <p className="text-sm text-muted-foreground">调整筛选条件或搜索关键字后重试。</p>
                 </div>
               </div>
             ) : null}
 
-            <div className="border-t border-stone-100 px-4 py-4">
+            <div className="border-t border-border px-4 py-4">
               <div className="flex items-center justify-center gap-3 overflow-x-auto whitespace-nowrap">
-                <div className="shrink-0 text-sm text-stone-500">
+                <div className="shrink-0 text-sm text-muted-foreground">
                 显示第 {filteredAccounts.length === 0 ? 0 : startIndex + 1} -{" "}
                 {Math.min(startIndex + Number(pageSize), filteredAccounts.length)} 条，共{" "}
                 {filteredAccounts.length} 条
                 </div>
 
-                <span className="shrink-0 text-sm leading-none text-stone-500">
+                <span className="shrink-0 text-sm leading-none text-muted-foreground">
                   {safePage} / {pageCount} 页
                 </span>
                 <Select
@@ -1535,7 +1535,7 @@ function AccountsPageContent() {
                     setPage(1);
                   }}
                 >
-                  <SelectTrigger className="h-10 w-[108px] shrink-0 rounded-lg border-stone-200 bg-white text-sm leading-none">
+                  <SelectTrigger className="h-10 w-[108px] shrink-0 rounded-lg border-border bg-card text-foreground text-sm leading-none">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1548,7 +1548,7 @@ function AccountsPageContent() {
                 <Button
                   variant="outline"
                   size="icon"
-                  className="size-10 shrink-0 rounded-lg border-stone-200 bg-white"
+                  className="size-10 shrink-0 rounded-lg border-border bg-card text-foreground"
                   disabled={safePage <= 1}
                   onClick={() => setPage((prev) => Math.max(1, prev - 1))}
                 >
@@ -1556,7 +1556,7 @@ function AccountsPageContent() {
                 </Button>
                 {paginationItems.map((item, index) =>
                   item === "..." ? (
-                    <span key={`ellipsis-${index}`} className="px-1 text-sm text-stone-400">
+                    <span key={`ellipsis-${index}`} className="px-1 text-sm text-muted-foreground">
                       ...
                     </span>
                   ) : (
@@ -1566,8 +1566,8 @@ function AccountsPageContent() {
                       className={cn(
                         "h-10 min-w-10 shrink-0 rounded-lg px-3",
                         item === safePage
-                          ? "bg-stone-950 text-white hover:bg-stone-800"
-                          : "border-stone-200 bg-white text-stone-700",
+                          ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                          : "border-border bg-card text-foreground hover:bg-accent",
                       )}
                       onClick={() => setPage(item)}
                     >
@@ -1578,7 +1578,7 @@ function AccountsPageContent() {
                 <Button
                   variant="outline"
                   size="icon"
-                  className="size-10 shrink-0 rounded-lg border-stone-200 bg-white"
+                  className="size-10 shrink-0 rounded-lg border-border bg-card text-foreground"
                   disabled={safePage >= pageCount}
                   onClick={() => setPage((prev) => Math.min(pageCount, prev + 1))}
                 >
@@ -1599,7 +1599,7 @@ export default function AccountsPage() {
   if (isCheckingAuth || !session || session.role !== "admin") {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <LoaderCircle className="size-5 animate-spin text-stone-400" />
+        <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
       </div>
     );
   }

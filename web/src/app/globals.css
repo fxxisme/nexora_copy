@@ -579,3 +579,49 @@
 .chat-md .hljs-addition { color: oklch(0.78 0.16 145); }
 .chat-md .hljs-emphasis { font-style: italic; }
 .chat-md .hljs-strong { font-weight: 600; }
+
+
+/* 暗黑模式下对历史硬编码类的全局自适应与调和兜底 */
+.dark {
+  .bg-white {
+    background-color: var(--card);
+  }
+  .bg-white\/95,
+  .bg-white\/90,
+  .bg-white\/80 {
+    background-color: color-mix(in oklch, var(--card) 92%, transparent);
+  }
+  .bg-stone-50,
+  .bg-stone-100 {
+    background-color: var(--secondary);
+  }
+  .hover\:bg-stone-50:hover,
+  .hover\:bg-stone-100:hover,
+  .hover\:bg-white:hover {
+    background-color: var(--secondary);
+  }
+  .border-stone-100,
+  .border-stone-200,
+  .border-stone-300,
+  .border-white\/80,
+  .border-white\/70,
+  .border-white\/60 {
+    border-color: var(--border);
+  }
+  .hover\:border-stone-300:hover {
+    border-color: oklch(1 0 0 / 22%);
+  }
+  .text-stone-900,
+  .text-stone-950 {
+    color: var(--foreground);
+  }
+  .text-stone-800,
+  .text-stone-700,
+  .text-stone-600 {
+    color: oklch(0.88 0 0);
+  }
+  .text-stone-500,
+  .text-stone-400 {
+    color: var(--muted-foreground);
+  }
+}

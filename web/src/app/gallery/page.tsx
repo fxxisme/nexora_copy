@@ -309,7 +309,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
 
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin ? (
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-stone-200 bg-white/80 px-3 py-2 text-sm text-stone-700 hover:bg-white">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-card/80 px-3 py-2 text-sm text-foreground hover:bg-accent">
               <Checkbox
                 checked={includeHidden}
                 onCheckedChange={(v) => setIncludeHidden(Boolean(v))}
@@ -319,7 +319,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
           ) : null}
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 rounded-xl border-border bg-card/80 px-4 text-foreground hover:bg-accent"
             onClick={() => void loadFirstPage()}
             disabled={isLoading}
           >
@@ -330,7 +330,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
       </section>
 
       {isLoading && items.length === 0 ? (
-        <Card className="mt-6 rounded-2xl border-white/80 bg-white/90 shadow-sm">
+        <Card className="mt-6 rounded-2xl border-border/80 bg-card shadow-sm">
           <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
             <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
               <LoaderCircle className="size-5 animate-spin" />
@@ -341,7 +341,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
       ) : null}
 
       {!isLoading && items.length === 0 ? (
-        <Card className="mt-6 rounded-2xl border-white/80 bg-white/90 shadow-sm">
+        <Card className="mt-6 rounded-2xl border-border/80 bg-card shadow-sm">
           <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
             <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
               <ImageIcon className="size-5" />
@@ -375,7 +375,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
                   type="button"
                   onClick={() => setFocused(item)}
                   className={cn(
-                    "group relative w-full cursor-pointer overflow-hidden rounded-2xl border border-stone-200/80 bg-stone-100 text-left shadow-sm transition hover:shadow-md",
+                    "group relative w-full cursor-pointer overflow-hidden rounded-2xl border border-border/80 bg-muted text-left shadow-sm transition hover:shadow-md",
                     isHidden && "opacity-60 hover:opacity-90",
                   )}
                   style={{ aspectRatio: String(ratio) }}
@@ -517,7 +517,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
                   </Button>
                   <Button
                     variant="outline"
-                    className="h-10 w-full rounded-xl border-stone-200 bg-white px-2"
+                    className="h-10 w-full rounded-xl border-border bg-card text-foreground px-2"
                     onClick={() => window.open(focusedView.url, "_blank", "noopener,noreferrer")}
                   >
                     <ExternalLink className="size-4" />
@@ -550,7 +550,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
                       {showAdminHide ? (
                         <Button
                           variant="outline"
-                          className="h-10 w-full rounded-xl border-stone-200 bg-white px-2"
+                          className="h-10 w-full rounded-xl border-border bg-card text-foreground px-2"
                           onClick={() => void handleAdminToggleHide(focusedView)}
                         >
                           <EyeOff className="size-4" />

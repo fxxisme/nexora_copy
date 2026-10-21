@@ -436,7 +436,7 @@ export function ImageComposer({
                     {isCountMenuOpen ? (
                       <div
                         ref={countMenuRef}
-                        className="fixed z-[80] rounded-2xl border border-stone-200/70 bg-white p-2 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
+                        className="fixed z-[80] rounded-2xl border border-border/80 bg-popover text-popover-foreground p-2 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
                         style={{
                           top: countMenuPos.top,
                           left: countMenuPos.left,
@@ -455,8 +455,8 @@ export function ImageComposer({
                                 className={cn(
                                   "flex h-9 cursor-pointer items-center justify-center rounded-lg font-data text-[13px] tabular-nums transition",
                                   active
-                                    ? "bg-stone-900 font-semibold text-white"
-                                    : "bg-stone-50 text-stone-700 hover:bg-stone-100",
+                                    ? "bg-primary font-semibold text-primary-foreground"
+                                    : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
                                 )}
                                 onClick={() => {
                                   onImageCountChange(String(value));
@@ -518,7 +518,7 @@ export function ImageComposer({
                     {isSizeMenuOpen ? (
                       <div
                         ref={sizeMenuRef}
-                        className="fixed z-[80] max-h-[55dvh] overflow-y-auto rounded-2xl border border-stone-200/70 bg-white p-1.5 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
+                        className="fixed z-[80] max-h-[55dvh] overflow-y-auto rounded-2xl border border-border/80 bg-popover text-popover-foreground p-1.5 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
                         style={{
                           top: sizeMenuPos.top,
                           left: sizeMenuPos.left,
@@ -535,7 +535,7 @@ export function ImageComposer({
                               type="button"
                               className={cn(
                                 "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition",
-                                active ? "bg-stone-900 text-white" : "text-stone-700 hover:bg-stone-100",
+                                active ? "bg-stone-900 text-white" : "text-foreground hover:bg-secondary",
                               )}
                               onClick={() => {
                                 onImageSizeChange(option.value);
@@ -621,7 +621,7 @@ export function ImageComposer({
                     {isResolutionMenuOpen ? (
                       <div
                         ref={resolutionMenuRef}
-                        className="fixed z-[80] max-h-[55dvh] overflow-y-auto rounded-2xl border border-stone-200/70 bg-white p-1.5 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
+                        className="fixed z-[80] max-h-[55dvh] overflow-y-auto rounded-2xl border border-border/80 bg-popover text-popover-foreground p-1.5 shadow-[0_2px_4px_rgba(15,23,42,0.04),0_24px_48px_-16px_rgba(15,23,42,0.18)]"
                         style={{
                           top: resolutionMenuPos.top,
                           left: resolutionMenuPos.left,

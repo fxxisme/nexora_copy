@@ -336,7 +336,7 @@ function WorksPageContent() {
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 rounded-xl border-border bg-card/80 px-4 text-foreground hover:bg-accent"
             onClick={() => void reload()}
             disabled={isLoading}
           >
@@ -347,7 +347,7 @@ function WorksPageContent() {
       </section>
 
       {isLoading && items.length === 0 ? (
-        <Card className="mt-6 rounded-2xl border-white/80 bg-white/90 shadow-sm">
+        <Card className="mt-6 rounded-2xl border-border/80 bg-card shadow-sm">
           <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
             <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
               <LoaderCircle className="size-5 animate-spin" />
@@ -358,7 +358,7 @@ function WorksPageContent() {
       ) : null}
 
       {!isLoading && items.length === 0 ? (
-        <Card className="mt-6 rounded-2xl border-white/80 bg-white/90 shadow-sm">
+        <Card className="mt-6 rounded-2xl border-border/80 bg-card shadow-sm">
           <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
             <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
               <Images className="size-5" />
@@ -369,7 +369,7 @@ function WorksPageContent() {
             </div>
             <Button
               variant="outline"
-              className="mt-2 h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700 hover:bg-stone-50"
+              className="mt-2 h-9 rounded-xl border-border bg-card px-4 text-foreground hover:bg-accent"
               onClick={() => window.location.assign("/image")}
             >
               <Sparkles className="size-4" />
@@ -522,7 +522,7 @@ function WorksPageContent() {
                     {focusedView.prompt}
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 p-3 text-[12px] leading-6 text-stone-500">
+                  <div className="rounded-xl border border-dashed border-border bg-muted/50 p-3 text-[12px] leading-6 text-muted-foreground">
                     此图未保留生成时的 prompt（可能是早期版本生成的）。发布到画廊时会让你手填。
                   </div>
                 )}
@@ -548,7 +548,7 @@ function WorksPageContent() {
                   </Button>
                   <Button
                     variant="outline"
-                    className="h-10 w-full rounded-xl border-stone-200 bg-white px-3"
+                    className="h-10 w-full rounded-xl border-border bg-card px-3 text-foreground"
                     onClick={() => void handleCopyPrompt(focusedView.prompt || "")}
                     disabled={!focusedView.prompt}
                   >
@@ -557,7 +557,7 @@ function WorksPageContent() {
                   </Button>
                   <Button
                     variant="outline"
-                    className="h-10 w-full rounded-xl border-stone-200 bg-white px-3"
+                    className="h-10 w-full rounded-xl border-border bg-card px-3 text-foreground"
                     onClick={() => void handlePublish(focusedView)}
                     disabled={focusedPublishState === "publishing" || focusedPublishState === "published"}
                   >
