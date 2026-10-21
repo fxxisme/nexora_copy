@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { deleteProxyGroup, fetchProxyGroups, fetchProxyView, saveProxyDefaults, saveProxyGroup, testProxy, testProxyGroup, type ProxyGroup, type ProxyTestResult } from "@/lib/api";
+import { deleteProxyGroup, fetchProxyGroups, fetchProxyView, saveProxyDefaults, saveProxyGroup, testProxy, testProxyGroup, testImageStorage, type ProxyGroup, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
 import { ProxyNodeImportDialog } from "./proxy-node-import-dialog";
@@ -405,9 +405,172 @@ export function ImageSection() {
   const setImagePollIntervalSecs = useSettingsStore((s) => s.setImagePollIntervalSecs);
   const setImagePollInitialWaitSecs = useSettingsStore((s) => s.setImagePollInitialWaitSecs);
   const setImageAccountConcurrency = useSettingsStore((s) => s.setImageAccountConcurrency);
+  const setImageStorageMode = useSettingsStore((s) => s.setImageStorageMode);
+  const setWebDAVUrl = useSettingsStore((s) => s.setWebDAVUrl);
+  const setWebDAVUsername = useSettingsStore((s) => s.setWebDAVUsername);
+  const setWebDAVPassword = useSettingsStore((s) => s.setWebDAVPassword);
+  const setWebDAVRootPath = useSettingsStore((s) => s.setWebDAVRootPath);
+  const setImageStoragePublicBaseUrl = useSettingsStore((s) => s.setImageStoragePublicBaseUrl);
+
+  const [testingWebDAV, setTestingWebDAV] = useState(false);
+
+  const handleTestWebDAV = async () => {
+    const url = String(config?.webdav_url || "").trim();
+    if (!url) {
+      toast.error("请先填写 WebDAV 服务地址");
+      return;
+    }
+    setTestingWebDAV(true);
+    try {
+      const res = await testImageStorage({
+        webdav_url: url,
+        webdav_username: String(config?.webdav_username || "").trim(),
+        webdav_password: String(config?.webdav_password || "").trim(),
+        webdav_root_path: String(config?.webdav_root_path || "nexora/images").trim(),
+      });
+      if (res.ok) {
+        toast.success("WebDAV 连接测试成功，读写正常！");
+      } else {
+        toast.error(`WebDAV 连接失败: ${res.error || "未知错误"}`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "测试 WebDAV 异常");
+    } finally {
+      setTestingWebDAV(false);
+    }
+  };
+
+  const storageMode = String(config?.image_storage_mode || "local");
 
   return (
     <div className="space-y-6">
+      {/* 存储模式与 WebDAV 云端存储配置 */}
+      <div className="space-y-4 rounded-2xl border border-stone-200 bg-stone-50/70 p-5 dark:border-border dark:bg-card/50">
+        <div>
+          <h3 className="text-sm font-semibold text-stone-900 dark:text-foreground">图片存储模式</h3>
+          <p className="mt-1 text-xs text-stone-500 dark:text-muted-foreground">
+            支持将生成的原图存放在云端 WebDAV 服务（如 Alist、Nextcloud、坚果云、群晖等），避免占用服务器本地磁盘。
+          </p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <button
+            type="button"
+            onClick={() => setImageStorageMode("local")}
+            className={`flex flex-col gap-1.5 rounded-xl border p-3.5 text-left transition-all ${
+              storageMode === "local"
+                ? "border-primary bg-primary/5 text-foreground ring-2 ring-primary/20 dark:bg-primary/10"
+                : "border-stone-200 bg-white text-stone-700 hover:border-stone-300 dark:border-border dark:bg-card dark:text-foreground"
+            }`}
+          >
+            <div className="text-xs font-semibold">仅本地存储</div>
+            <div className="text-[11px] text-stone-500 dark:text-muted-foreground leading-4">所有原图保存在服务器本地磁盘目录</div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setImageStorageMode("webdav")}
+            className={`flex flex-col gap-1.5 rounded-xl border p-3.5 text-left transition-all ${
+              storageMode === "webdav"
+                ? "border-primary bg-primary/5 text-foreground ring-2 ring-primary/20 dark:bg-primary/10"
+                : "border-stone-200 bg-white text-stone-700 hover:border-stone-300 dark:border-border dark:bg-card dark:text-foreground"
+            }`}
+          >
+            <div className="text-xs font-semibold text-primary">WebDAV 云端存储</div>
+            <div className="text-[11px] text-stone-500 dark:text-muted-foreground leading-4">原图直接存入 WebDAV，本地不存大图，节省本地空间</div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setImageStorageMode("both")}
+            className={`flex flex-col gap-1.5 rounded-xl border p-3.5 text-left transition-all ${
+              storageMode === "both"
+                ? "border-primary bg-primary/5 text-foreground ring-2 ring-primary/20 dark:bg-primary/10"
+                : "border-stone-200 bg-white text-stone-700 hover:border-stone-300 dark:border-border dark:bg-card dark:text-foreground"
+            }`}
+          >
+            <div className="text-xs font-semibold">双写备份模式</div>
+            <div className="text-[11px] text-stone-500 dark:text-muted-foreground leading-4">本地磁盘与 WebDAV 同时写入，保障高可用与容灾</div>
+          </button>
+        </div>
+
+        {(storageMode === "webdav" || storageMode === "both") && (
+          <div className="mt-4 space-y-4 rounded-xl border border-stone-200 bg-white p-4 dark:border-border dark:bg-card">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5 md:col-span-2">
+                <label className={LABEL_CLASS}>WebDAV 服务地址 (URL)</label>
+                <Input
+                  value={String(config?.webdav_url || "")}
+                  onChange={(e) => setWebDAVUrl(e.target.value)}
+                  placeholder="https://dav.jianguoyun.com/dav 或 http://192.168.1.100:5244/dav"
+                  className={INPUT_CLASS}
+                />
+                <p className={HELP_CLASS}>支持带有路径前缀的完整 WebDAV 根地址</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className={LABEL_CLASS}>WebDAV 用户名</label>
+                <Input
+                  value={String(config?.webdav_username || "")}
+                  onChange={(e) => setWebDAVUsername(e.target.value)}
+                  placeholder="username"
+                  className={INPUT_CLASS}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className={LABEL_CLASS}>WebDAV 密码 / 授权密钥</label>
+                <Input
+                  type="password"
+                  value={String(config?.webdav_password || "")}
+                  onChange={(e) => setWebDAVPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className={INPUT_CLASS}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className={LABEL_CLASS}>WebDAV 相对存储目录</label>
+                <Input
+                  value={String(config?.webdav_root_path || "")}
+                  onChange={(e) => setWebDAVRootPath(e.target.value)}
+                  placeholder="nexora/images"
+                  className={INPUT_CLASS}
+                />
+                <p className={HELP_CLASS}>将在该目录下按 年/月/日 自动建立结构</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className={LABEL_CLASS}>外部公开访问前缀 (可选)</label>
+                <Input
+                  value={String(config?.image_storage_public_base_url || "")}
+                  onChange={(e) => setImageStoragePublicBaseUrl(e.target.value)}
+                  placeholder="https://images.example.com"
+                  className={INPUT_CLASS}
+                />
+                <p className={HELP_CLASS}>如配置了 CDN 反代或公开 WebDAV 挂载域名，可在此填入</p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-stone-100 pt-3 dark:border-border">
+              <span className="text-xs text-stone-500 dark:text-muted-foreground">
+                提示：纯 WebDAV 模式下画廊仍会自动利用轻量缩略图加速预览，点击大图自动从 WebDAV 回源。
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestWebDAV}
+                disabled={testingWebDAV}
+                className="h-8 gap-1.5 rounded-lg px-3 text-xs"
+              >
+                {testingWebDAV ? <LoaderCircle className="size-3.5 animate-spin" /> : <PlugZap className="size-3.5" />}
+                测试 WebDAV 连接
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
       <div className="space-y-2">
         <label className={LABEL_CLASS}>图片访问地址</label>
         <Input
@@ -627,3 +790,4 @@ export function LogSection() {
     </div>
   );
 }
+

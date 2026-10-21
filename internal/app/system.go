@@ -86,6 +86,24 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if v, ok := body["auto_remove_rate_limited_accounts"]; ok {
 			s.cfg.AutoRemoveRateLimitedAccounts = boolAny(v, false)
 		}
+		if v, ok := body["image_storage_mode"]; ok {
+			s.cfg.ImageStorageMode = strings.TrimSpace(strAny(v, "local"))
+		}
+		if v, ok := body["webdav_url"]; ok {
+			s.cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(strAny(v, "")), "/")
+		}
+		if v, ok := body["webdav_username"]; ok {
+			s.cfg.WebDAVUsername = strings.TrimSpace(strAny(v, ""))
+		}
+		if v, ok := body["webdav_password"]; ok {
+			s.cfg.WebDAVPassword = strings.TrimSpace(strAny(v, ""))
+		}
+		if v, ok := body["webdav_root_path"]; ok {
+			s.cfg.WebDAVRootPath = strings.Trim(strings.TrimSpace(strAny(v, "nexora/images")), "/")
+		}
+		if v, ok := body["image_storage_public_base_url"]; ok {
+			s.cfg.ImageStoragePublicBaseURL = strings.TrimRight(strings.TrimSpace(strAny(v, "")), "/")
+		}
 		_ = s.saveConfig()
 		writeJSON(w, 200, map[string]any{"config": s.configMap(false)})
 	default:
@@ -810,4 +828,42 @@ func (s *Server) handleNamedListID(w http.ResponseWriter, r *http.Request, prefi
 		return
 	}
 	writeErr(w, 405, "method not allowed")
+}
+
+func (s *Server) handleImageStorageTest(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	davURL := s.cfg.WebDAVURL
+	username := s.cfg.WebDAVUsername
+	password := s.cfg.WebDAVPassword
+	rootPath := s.cfg.WebDAVRootPath
+
+	if v, ok := body["webdav_url"]; ok && strAny(v, "") != "" {
+		davURL = strAny(v, "")
+	}
+	if v, ok := body["webdav_username"]; ok {
+		username = strAny(v, "")
+	}
+	if v, ok := body["webdav_password"]; ok {
+		password = strAny(v, "")
+	}
+	if v, ok := body["webdav_root_path"]; ok {
+		rootPath = strAny(v, "")
+	}
+
+	client := NewWebDAVClient(davURL, username, password, rootPath)
+	res, err := client.Test(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "result": res})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "error": nil, "result": res})
 }

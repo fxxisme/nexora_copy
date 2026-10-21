@@ -80,6 +80,12 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     base_url: typeof config.base_url === "string" ? config.base_url : "",
     global_system_prompt: String(config.global_system_prompt || ""),
     sensitive_words: Array.isArray(config.sensitive_words) ? config.sensitive_words : [],
+    image_storage_mode: String(config.image_storage_mode || "local"),
+    webdav_url: String(config.webdav_url || ""),
+    webdav_username: String(config.webdav_username || ""),
+    webdav_password: String(config.webdav_password || ""),
+    webdav_root_path: String(config.webdav_root_path || "nexora/images"),
+    image_storage_public_base_url: String(config.image_storage_public_base_url || ""),
     ai_review: {
       enabled: Boolean(config.ai_review?.enabled),
       base_url: String(config.ai_review?.base_url || ""),
@@ -219,6 +225,12 @@ type SettingsStore = {
   setLogLevel: (level: string, enabled: boolean) => void;
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
+  setImageStorageMode: (value: string) => void;
+  setWebDAVUrl: (value: string) => void;
+  setWebDAVUsername: (value: string) => void;
+  setWebDAVPassword: (value: string) => void;
+  setWebDAVRootPath: (value: string) => void;
+  setImageStoragePublicBaseUrl: (value: string) => void;
   setGlobalSystemPrompt: (value: string) => void;
   setSensitiveWordsText: (value: string) => void;
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
@@ -389,6 +401,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         base_url: String(config.base_url || "").trim(),
         global_system_prompt: String(config.global_system_prompt || "").trim(),
         sensitive_words: (config.sensitive_words || []).map((item) => String(item).trim()).filter(Boolean),
+        image_storage_mode: String(config.image_storage_mode || "local").trim(),
+        webdav_url: String(config.webdav_url || "").trim(),
+        webdav_username: String(config.webdav_username || "").trim(),
+        webdav_password: String(config.webdav_password || "").trim(),
+        webdav_root_path: String(config.webdav_root_path || "nexora/images").trim(),
+        image_storage_public_base_url: String(config.image_storage_public_base_url || "").trim(),
         ai_review: {
           enabled: Boolean(config.ai_review?.enabled),
           base_url: String(config.ai_review?.base_url || "").trim(),
@@ -459,6 +477,25 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setImagePollInitialWaitSecs: (value) => {
     set((state) => state.config ? { config: { ...state.config, image_poll_initial_wait_secs: value }, isDirty: true } : {});
+  },
+
+  setImageStorageMode: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_storage_mode: value }, isDirty: true } : {});
+  },
+  setWebDAVUrl: (value) => {
+    set((state) => state.config ? { config: { ...state.config, webdav_url: value }, isDirty: true } : {});
+  },
+  setWebDAVUsername: (value) => {
+    set((state) => state.config ? { config: { ...state.config, webdav_username: value }, isDirty: true } : {});
+  },
+  setWebDAVPassword: (value) => {
+    set((state) => state.config ? { config: { ...state.config, webdav_password: value }, isDirty: true } : {});
+  },
+  setWebDAVRootPath: (value) => {
+    set((state) => state.config ? { config: { ...state.config, webdav_root_path: value }, isDirty: true } : {});
+  },
+  setImageStoragePublicBaseUrl: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_storage_public_base_url: value }, isDirty: true } : {});
   },
 
   setImageAccountConcurrency: (value) => {
@@ -1047,3 +1084,4 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 }));
+

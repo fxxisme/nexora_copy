@@ -22,6 +22,12 @@ type Config struct {
 	ImageAccountConcurrency       int            `json:"image_account_concurrency"`
 	CleanupProtectGallery         bool           `json:"cleanup_protect_gallery"`
 	CleanupProtectUserImages      bool           `json:"cleanup_protect_user_images"`
+	ImageStorageMode              string         `json:"image_storage_mode"`
+	WebDAVURL                     string         `json:"webdav_url"`
+	WebDAVUsername                string         `json:"webdav_username"`
+	WebDAVPassword                string         `json:"webdav_password"`
+	WebDAVRootPath                string         `json:"webdav_root_path"`
+	ImageStoragePublicBaseURL     string         `json:"image_storage_public_base_url"`
 	Extra                         map[string]any `json:"-"`
 }
 
@@ -155,6 +161,15 @@ type GalleryItem struct {
 	IsEdit        bool   `json:"is_edit"`
 	CreatedAt     int64  `json:"created_at"`
 	Status        string `json:"status"`
+}
+
+type ImageMeta struct {
+	Rel       string `json:"rel"`
+	Name      string `json:"name"`
+	Date      string `json:"date"`
+	Size      int64  `json:"size"`
+	CreatedAt string `json:"created_at"`
+	Storage   string `json:"storage"`
 }
 
 func nowISO() string { return time.Now().UTC().Format(time.RFC3339Nano) }

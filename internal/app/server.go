@@ -164,6 +164,12 @@ func (s *Server) configMap(includeAuth bool) map[string]any {
 	m["image_account_concurrency"] = s.cfg.ImageAccountConcurrency
 	m["cleanup_protect_gallery"] = s.cfg.CleanupProtectGallery
 	m["cleanup_protect_user_images"] = s.cfg.CleanupProtectUserImages
+	m["image_storage_mode"] = s.cfg.ImageStorageMode
+	m["webdav_url"] = s.cfg.WebDAVURL
+	m["webdav_username"] = s.cfg.WebDAVUsername
+	m["webdav_password"] = s.cfg.WebDAVPassword
+	m["webdav_root_path"] = s.cfg.WebDAVRootPath
+	m["image_storage_public_base_url"] = s.cfg.ImageStoragePublicBaseURL
 	if _, ok := m["backup"]; !ok {
 		m["backup"] = disabledBackupSettings()
 	}
@@ -278,7 +284,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/chat/completions", s.handleV1ChatCompletions)
 	s.mux.HandleFunc("/v1/responses", s.handleV1Responses)
 	s.mux.HandleFunc("/v1/messages", s.handleV1Messages)
-	s.mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.imagesDir))))
+	s.mux.HandleFunc("/api/image-storage/test", s.handleImageStorageTest)
+	s.mux.HandleFunc("/api/system/image-storage/test", s.handleImageStorageTest)
+	s.mux.HandleFunc("/images/", s.handleServeImage)
 	s.mux.HandleFunc("/", s.handleWeb)
 }
 
@@ -303,3 +311,4 @@ func (s *Server) baseURL(r *http.Request) string {
 	}
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
+

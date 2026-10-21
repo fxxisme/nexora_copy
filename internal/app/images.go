@@ -3,9 +3,11 @@ package app
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +16,13 @@ import (
 	"strings"
 	"time"
 )
+
+func (s *Server) webdavClient() *WebDAVClient {
+	if strings.TrimSpace(s.cfg.WebDAVURL) == "" {
+		return nil
+	}
+	return NewWebDAVClient(s.cfg.WebDAVURL, s.cfg.WebDAVUsername, s.cfg.WebDAVPassword, s.cfg.WebDAVRootPath)
+}
 
 func (s *Server) saveImage(r *http.Request, data []byte) (string, string, error) {
 	return s.saveImageWithBaseURL(s.baseURL(r), data)
@@ -25,15 +34,77 @@ func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, stri
 	relDir := filepath.Join(time.Now().Format("2006"), time.Now().Format("01"), time.Now().Format("02"))
 	name := fmt.Sprintf("%d_%x.png", time.Now().Unix(), sum)
 	rel := filepath.ToSlash(filepath.Join(relDir, name))
-	path := filepath.Join(s.imagesDir, relDir, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return "", "", err
+
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.ImageStorageMode))
+	if mode == "" {
+		mode = "local"
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", "", err
+	client := s.webdavClient()
+	if (mode == "webdav" || mode == "both") && client == nil {
+		mode = "local"
 	}
-	return rel, baseURL + "/images/" + rel, nil
+
+	// 1. 本地存储
+	storedLocal := false
+	if mode == "local" || mode == "both" {
+		path := filepath.Join(s.imagesDir, relDir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return "", "", err
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			return "", "", err
+		}
+		storedLocal = true
+	}
+
+	// 2. WebDAV 远端存储
+	storedWebDAV := false
+	if mode == "webdav" || mode == "both" {
+		if err := client.Put(context.Background(), rel, data, "image/png"); err != nil {
+			if mode == "webdav" && !storedLocal {
+				return "", "", fmt.Errorf("WebDAV 上传失败: %w", err)
+			}
+			if s.logSvc != nil {
+				s.logSvc.add("system", "WebDAV图片备份失败", map[string]any{"rel": rel, "error": err.Error()})
+			}
+		} else {
+			storedWebDAV = true
+		}
+	}
+
+	// 3. 生成本地缩略图（几十KB，极速加载画廊且不占存储空间）
+	s.generateThumbnailFromData(rel, data)
+
+	// 4. 记录图片元数据
+	actualStorage := "local"
+	if storedLocal && storedWebDAV {
+		actualStorage = "both"
+	} else if storedWebDAV {
+		actualStorage = "webdav"
+	}
+	_ = s.store.UpdateImageMeta(func(m map[string]ImageMeta) map[string]ImageMeta {
+		if m == nil {
+			m = map[string]ImageMeta{}
+		}
+		m[rel] = ImageMeta{
+			Rel:       rel,
+			Name:      name,
+			Date:      time.Now().Format("2006-01-02"),
+			Size:      int64(len(data)),
+			CreatedAt: time.Now().Format(time.RFC3339),
+			Storage:   actualStorage,
+		}
+		return m
+	})
+
+	imageURL := baseURL + "/images/" + rel
+	if strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL) != "" {
+		imageURL = strings.TrimRight(strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL), "/") + "/" + rel
+	}
+
+	return rel, imageURL, nil
 }
+
 func (s *Server) recordOwner(id *Identity, rel string) {
 	if id == nil {
 		return
@@ -43,12 +114,14 @@ func (s *Server) recordOwner(id *Identity, rel string) {
 		return owners
 	})
 }
+
 func (s *Server) recordPrompt(rel, prompt string, isEdit bool) {
 	_ = s.store.UpdatePrompts(func(ps map[string]map[string]any) map[string]map[string]any {
 		ps[rel] = map[string]any{"prompt": prompt, "is_edit": isEdit, "created_at": time.Now().Unix()}
 		return ps
 	})
 }
+
 func (s *Server) maybeCleanupOldImages() {
 	s.imageCleanupMu.Lock()
 	if time.Since(s.lastImageCleanup) < time.Hour {
@@ -59,6 +132,7 @@ func (s *Server) maybeCleanupOldImages() {
 	s.imageCleanupMu.Unlock()
 	s.cleanupOldImages()
 }
+
 func (s *Server) cleanupOldImages() int {
 	days := s.cfg.ImageRetentionDays
 	if days <= 0 {
@@ -99,7 +173,6 @@ func (s *Server) cleanupOldImages() int {
 		}
 		return nil
 	})
-	// 清理空目录，深目录优先
 	dirs := []string{}
 	_ = filepath.WalkDir(s.imagesDir, func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() && path != s.imagesDir {
@@ -152,12 +225,92 @@ func (s *Server) imagePath(rel string) (string, error) {
 	return target, nil
 }
 
+func (s *Server) handleServeImage(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimPrefix(r.URL.Path, "/images/")
+	cleanedRel, err := safeImageRel(rel)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 1. 本地文件优先
+	localPath, err := s.imagePath(cleanedRel)
+	if err == nil {
+		if st, err := os.Stat(localPath); err == nil && !st.IsDir() {
+			http.ServeFile(w, r, localPath)
+			return
+		}
+	}
+
+	// 2. 本地不存在时尝试从 WebDAV 回源读取
+	client := s.webdavClient()
+	if client != nil {
+		stream, size, contentType, err := client.GetStream(r.Context(), cleanedRel)
+		if err == nil {
+			defer stream.Close()
+			if contentType != "" {
+				w.Header().Set("Content-Type", contentType)
+			} else {
+				w.Header().Set("Content-Type", "image/png")
+			}
+			if size > 0 {
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+			}
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			_, _ = io.Copy(w, stream)
+			return
+		}
+	}
+
+	http.NotFound(w, r)
+}
+
 func (s *Server) listImages(r *http.Request, ownerFilter string) map[string]any {
 	owners := s.store.LoadOwners()
 	prompts := s.store.LoadPrompts()
 	tags := s.store.LoadTags()
-	items := []map[string]any{}
-	filepath.WalkDir(s.imagesDir, func(path string, d os.DirEntry, err error) error {
+	metaMap := s.store.LoadImageMeta()
+
+	itemsMap := map[string]map[string]any{}
+
+	// 1. 加载元数据索引（涵盖保存在 WebDAV 或两端的图片）
+	for rel, m := range metaMap {
+		owner := owners[rel]
+		if ownerFilter != "" {
+			if ownerFilter == "__unowned__" && owner != "" {
+				continue
+			}
+			if ownerFilter != "__unowned__" && owner != ownerFilter {
+				continue
+			}
+		}
+		pr := prompts[rel]
+		imgURL := s.baseURL(r) + "/images/" + rel
+		if strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL) != "" {
+			imgURL = strings.TrimRight(strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL), "/") + "/" + rel
+		}
+		storage := m.Storage
+		if storage == "" {
+			storage = "local"
+		}
+		itemsMap[rel] = map[string]any{
+			"rel":           rel,
+			"path":          rel,
+			"name":          m.Name,
+			"date":          m.Date,
+			"size":          m.Size,
+			"url":           imgURL,
+			"thumbnail_url": s.baseURL(r) + "/image-thumbnails/" + rel,
+			"created_at":    m.CreatedAt,
+			"tags":          tags[rel],
+			"owner_id":      owner,
+			"prompt":        strAny(pr["prompt"], ""),
+			"storage":       storage,
+		}
+	}
+
+	// 2. 扫描合并本地历史未入索引的图片
+	_ = filepath.WalkDir(s.imagesDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -167,6 +320,9 @@ func (s *Server) listImages(r *http.Request, ownerFilter string) map[string]any 
 		}
 		rel, _ := filepath.Rel(s.imagesDir, path)
 		rel = filepath.ToSlash(rel)
+		if _, exists := itemsMap[rel]; exists {
+			return nil
+		}
 		owner := owners[rel]
 		if ownerFilter != "" {
 			if ownerFilter == "__unowned__" && owner != "" {
@@ -178,18 +334,42 @@ func (s *Server) listImages(r *http.Request, ownerFilter string) map[string]any 
 		}
 		st, _ := d.Info()
 		pr := prompts[rel]
-		items = append(items, map[string]any{"rel": rel, "path": rel, "name": d.Name(), "date": st.ModTime().Format("2006-01-02"), "size": st.Size(), "url": s.baseURL(r) + "/images/" + rel, "thumbnail_url": s.baseURL(r) + "/image-thumbnails/" + rel, "created_at": st.ModTime().Format(time.RFC3339), "tags": tags[rel], "owner_id": owner, "prompt": strAny(pr["prompt"], "")})
+		imgURL := s.baseURL(r) + "/images/" + rel
+		if strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL) != "" {
+			imgURL = strings.TrimRight(strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL), "/") + "/" + rel
+		}
+		itemsMap[rel] = map[string]any{
+			"rel":           rel,
+			"path":          rel,
+			"name":          d.Name(),
+			"date":          st.ModTime().Format("2006-01-02"),
+			"size":          st.Size(),
+			"url":           imgURL,
+			"thumbnail_url": s.baseURL(r) + "/image-thumbnails/" + rel,
+			"created_at":    st.ModTime().Format(time.RFC3339),
+			"tags":          tags[rel],
+			"owner_id":      owner,
+			"prompt":        strAny(pr["prompt"], ""),
+			"storage":       "local",
+		}
 		return nil
 	})
+
+	items := make([]map[string]any, 0, len(itemsMap))
+	for _, it := range itemsMap {
+		items = append(items, it)
+	}
 	sort.Slice(items, func(i, j int) bool { return strAny(items[i]["created_at"], "") > strAny(items[j]["created_at"], "") })
 	return map[string]any{"items": items}
 }
+
 func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
 	writeJSON(w, 200, s.listImages(r, r.URL.Query().Get("owner")))
 }
+
 func (s *Server) handleMyImages(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.requireIdentity(w, r)
 	if !ok {
@@ -201,6 +381,7 @@ func (s *Server) handleMyImages(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, s.listImages(r, owner))
 }
+
 func (s *Server) handleImageOwners(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -218,6 +399,7 @@ func (s *Server) handleImageOwners(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
+
 func (s *Server) handleImageDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.requireIdentity(w, r)
 	if !ok {
@@ -230,6 +412,11 @@ func (s *Server) handleImageDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owners := s.store.LoadOwners()
+	metaMap := s.store.LoadImageMeta()
+	prompts := s.store.LoadPrompts()
+	tags := s.store.LoadTags()
+	client := s.webdavClient()
+
 	removed := 0
 	for _, p := range b.Paths {
 		rel, err := safeImageRel(p)
@@ -239,18 +426,52 @@ func (s *Server) handleImageDelete(w http.ResponseWriter, r *http.Request) {
 		if id.Role != "admin" && owners[rel] != id.ID {
 			continue
 		}
-		path, err := s.imagePath(rel)
-		if err != nil {
-			continue
+
+		deletedThis := false
+		// 1. 删除本地原图（如果存在）
+		if localPath, err := s.imagePath(rel); err == nil {
+			if os.Remove(localPath) == nil {
+				deletedThis = true
+			}
 		}
-		if os.Remove(path) == nil {
+		// 2. 删除本地缩略图
+		_ = os.Remove(s.thumbnailPath(rel))
+
+		// 3. 删除 WebDAV 远端（如果存在）
+		if client != nil {
+			if err := client.Delete(r.Context(), rel); err == nil {
+				deletedThis = true
+			}
+		}
+
+		if deletedThis || metaMap[rel].Rel != "" {
 			removed++
 			delete(owners, rel)
+			delete(metaMap, rel)
+			delete(prompts, rel)
+			delete(tags, rel)
 		}
 	}
+
 	_ = s.store.SaveOwners(owners)
+	_ = s.store.SaveImageMeta(metaMap)
+	_ = s.store.SavePrompts(prompts)
+	_ = s.store.SaveTags(tags)
 	writeJSON(w, 200, map[string]any{"removed": removed})
 }
+
+func (s *Server) getImageData(ctx context.Context, rel string) ([]byte, error) {
+	if localPath, err := s.imagePath(rel); err == nil {
+		if data, err := os.ReadFile(localPath); err == nil {
+			return data, nil
+		}
+	}
+	if client := s.webdavClient(); client != nil {
+		return client.Get(ctx, rel)
+	}
+	return nil, fmt.Errorf("image not found: %s", rel)
+}
+
 func (s *Server) handleImageDownload(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -266,11 +487,7 @@ func (s *Server) handleImageDownload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		path, err := s.imagePath(rel)
-		if err != nil {
-			continue
-		}
-		data, err := os.ReadFile(path)
+		data, err := s.getImageData(r.Context(), rel)
 		if err == nil {
 			f, _ := zw.Create(filepath.Base(rel))
 			_, _ = f.Write(data)
@@ -281,6 +498,7 @@ func (s *Server) handleImageDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=images.zip")
 	_, _ = w.Write(buf.Bytes())
 }
+
 func (s *Server) handleImageDownloadSingle(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -290,17 +508,42 @@ func (s *Server) handleImageDownloadSingle(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
-	path, err := s.imagePath(rel)
-	if err != nil {
-		http.NotFound(w, r)
-		return
+
+	// 1. 本地有直接服务
+	if localPath, err := s.imagePath(rel); err == nil {
+		if st, err := os.Stat(localPath); err == nil && !st.IsDir() {
+			http.ServeFile(w, r, localPath)
+			return
+		}
 	}
-	http.ServeFile(w, r, path)
+
+	// 2. 本地无则从 WebDAV 获取流
+	if client := s.webdavClient(); client != nil {
+		stream, size, contentType, err := client.GetStream(r.Context(), rel)
+		if err == nil {
+			defer stream.Close()
+			if contentType != "" {
+				w.Header().Set("Content-Type", contentType)
+			} else {
+				w.Header().Set("Content-Type", "image/png")
+			}
+			if size > 0 {
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+			}
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(rel)))
+			_, _ = io.Copy(w, stream)
+			return
+		}
+	}
+
+	http.NotFound(w, r)
 }
+
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/image-thumbnails/")
 	s.serveThumbnail(w, r, rel)
 }
+
 func (s *Server) handleImageTags(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -336,6 +579,7 @@ func (s *Server) handleImageTags(w http.ResponseWriter, r *http.Request) {
 	}
 	writeErr(w, 405, "method not allowed")
 }
+
 func (s *Server) handleImageTagDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return

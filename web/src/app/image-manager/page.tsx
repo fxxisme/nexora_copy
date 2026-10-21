@@ -667,7 +667,7 @@ function ImageManagerContent() {
             {isLoading ? <LoaderCircle className="size-4 animate-spin" /> : <Search className="size-4" />}
             查询
           </Button>
-          <Button variant="outline" onClick={() => setDeleteMode("filtered")} disabled={isDeleting || items.length === 0 || (!startDate && !endDate && !owner)} className="h-10 rounded-xl border-rose-200 bg-white px-4 text-rose-600 hover:bg-rose-50">
+          <Button variant="outline" onClick={() => setDeleteMode("filtered")} disabled={isDeleting || items.length === 0 || (!startDate && !endDate && !owner)} className="h-10 rounded-xl border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/15 dark:border-destructive/40 dark:bg-destructive/15 dark:hover:bg-destructive/25 px-4">
             <Trash2 className="size-4" />
             删除匹配结果
           </Button>
@@ -751,7 +751,7 @@ function ImageManagerContent() {
                 {isDownloading ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
                 下载所选
               </Button>
-              <Button variant="outline" className="h-8 rounded-lg border-rose-200 bg-white px-3 text-rose-600 hover:bg-rose-50" onClick={() => setDeleteMode("selected")} disabled={selectedPaths.length === 0 || isDeleting}>
+              <Button variant="outline" className="h-8 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/15 dark:border-destructive/40 dark:bg-destructive/15 dark:hover:bg-destructive/25 px-3" onClick={() => setDeleteMode("selected")} disabled={selectedPaths.length === 0 || isDeleting}>
                 <Trash2 className="size-4" />
                 删除所选
               </Button>
@@ -1145,3 +1145,4 @@ export default function ImageManagerPage() {
   }
   return <ImageManagerContent />;
 }
+

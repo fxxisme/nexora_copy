@@ -459,6 +459,15 @@ func (s *Store) SavePrompts(items map[string]map[string]any) error {
 func (s *Store) UpdatePrompts(fn func(map[string]map[string]any) map[string]map[string]any) error {
 	return updateDocument(s, "image_prompts.json", map[string]map[string]any{}, fn)
 }
+func (s *Store) LoadImageMeta() map[string]ImageMeta {
+	return loadDocument(s, "image_metadata.json", map[string]ImageMeta{})
+}
+func (s *Store) SaveImageMeta(items map[string]ImageMeta) error {
+	return s.SaveDocument("image_metadata.json", items)
+}
+func (s *Store) UpdateImageMeta(fn func(map[string]ImageMeta) map[string]ImageMeta) error {
+	return updateDocument(s, "image_metadata.json", map[string]ImageMeta{}, fn)
+}
 func (s *Store) LoadTags() map[string][]string {
 	return loadDocument(s, "image_tags.json", map[string][]string{})
 }
@@ -490,3 +499,4 @@ func ensureNotDir(path string) error {
 }
 
 func hashKey(key string) string { h := sha256.Sum256([]byte(key)); return hex.EncodeToString(h[:]) }
+

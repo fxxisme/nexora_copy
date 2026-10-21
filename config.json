@@ -51,5 +51,11 @@
   "proxy": "http://127.0.0.1:7897",
   "refresh_account_interval_minute": 60,
   "sensitive_words": [],
-  "sentinel_solver_url": ""
+  "sentinel_solver_url": "",
+  "image_storage_mode": "local",
+  "webdav_url": "",
+  "webdav_username": "",
+  "webdav_password": "",
+  "webdav_root_path": "nexora/images",
+  "image_storage_public_base_url": ""
 }

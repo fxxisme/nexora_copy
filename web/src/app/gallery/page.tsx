@@ -540,7 +540,7 @@ function GalleryPageContent({ isAdmin }: { isAdmin: boolean }) {
                       {showSelfUnpublish ? (
                         <Button
                           variant="outline"
-                          className="h-10 w-full rounded-xl border-rose-200 bg-white px-2 text-rose-600 hover:bg-rose-50"
+                          className="h-10 w-full rounded-xl border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/15 dark:border-destructive/40 dark:bg-destructive/15 dark:hover:bg-destructive/25 px-2"
                           onClick={() => void handleSelfUnpublish(focusedView)}
                         >
                           <Trash2 className="size-4" />
@@ -623,3 +623,4 @@ export default function GalleryPage() {
 
   return <GalleryPageContent isAdmin={session.role === "admin"} />;
 }
+

@@ -218,10 +218,10 @@ function LogsContent() {
                 <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
                 刷新
               </Button>
-              <button type="button" className="text-sm text-muted-foreground hover:text-stone-900 disabled:text-stone-300" onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0 || isDeleting}>
+              <button type="button" className="text-sm text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40" onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0 || isDeleting}>
                 取消选择
               </button>
-              <Button variant="outline" className="h-8 rounded-lg border-rose-200 bg-white px-3 text-rose-600 hover:bg-rose-50" onClick={() => setDeletingItems(items.filter((item) => selectedSet.has(item.id)))} disabled={selectedIds.length === 0 || isDeleting}>
+              <Button variant="outline" className="h-8 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/15 dark:border-destructive/40 dark:bg-destructive/15 dark:hover:bg-destructive/25 px-3" onClick={() => setDeletingItems(items.filter((item) => selectedSet.has(item.id)))} disabled={selectedIds.length === 0 || isDeleting}>
                 <Trash2 className="size-4" />
                 删除所选
               </Button>
@@ -393,3 +393,4 @@ export default function LogsPage() {
   }
   return <LogsContent />;
 }
+

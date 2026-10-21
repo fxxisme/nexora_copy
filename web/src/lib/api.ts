@@ -198,6 +198,12 @@ export type SettingsConfig = {
   log_levels?: string[];
   backup?: BackupSettings;
   backup_state?: BackupState;
+  image_storage_mode?: "local" | "webdav" | "both" | string;
+  webdav_url?: string;
+  webdav_username?: string;
+  webdav_password?: string;
+  webdav_root_path?: string;
+  image_storage_public_base_url?: string;
   [key: string]: unknown;
 };
 
@@ -719,6 +725,18 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
   return httpRequest<{ config: SettingsConfig }>("/api/settings", {
     method: "POST",
     body: settings,
+  });
+}
+
+export async function testImageStorage(params?: {
+  webdav_url?: string;
+  webdav_username?: string;
+  webdav_password?: string;
+  webdav_root_path?: string;
+}) {
+  return httpRequest<{ ok: boolean; error?: string; status?: number }>("/api/image-storage/test", {
+    method: "POST",
+    body: params || {},
   });
 }
 
@@ -1504,3 +1522,4 @@ export async function* streamChat(
     try { reader.releaseLock(); } catch { /* noop */ }
   }
 }
+
