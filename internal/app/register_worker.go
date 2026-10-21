@@ -13,9 +13,13 @@ import (
 	"html"
 	"io"
 	"math/rand"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	stdhttp "net/http"
 	"net/http/cookiejar"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -2694,7 +2698,11 @@ func (p *cloudflareTempMailRegisterProvider) WaitForCode(ctx context.Context, ma
 		out := make([]map[string]any, 0, len(items))
 		for _, item := range items {
 			if messageMatchesEmail(item, mailbox.Address) {
-				out = append(out, normalizeGenericMailMessage(item))
+				msg := normalizeGenericMailMessage(item)
+				if strAny(msg["provider"], "") == "" {
+					msg["provider"] = p.Name()
+				}
+				out = append(out, msg)
 			}
 		}
 		return out, nil
@@ -3949,6 +3957,112 @@ func mailItemTimestamp(item map[string]any) time.Time {
 	return time.Time{}
 }
 
+func parseRawMail(rawText string) (subject, sender, textContent, htmlContent string) {
+	rawText = strings.TrimSpace(rawText)
+	if rawText == "" {
+		return "", "", "", ""
+	}
+
+	msg, err := mail.ReadMessage(strings.NewReader(rawText))
+	if err != nil {
+		parts := strings.SplitN(rawText, "\r\n\r\n", 2)
+		if len(parts) < 2 {
+			parts = strings.SplitN(rawText, "\n\n", 2)
+		}
+		if len(parts) == 2 {
+			return "", "", parts[1], ""
+		}
+		return "", "", rawText, ""
+	}
+
+	wordDec := &mime.WordDecoder{}
+	if s, err := wordDec.DecodeHeader(msg.Header.Get("Subject")); err == nil {
+		subject = s
+	} else {
+		subject = msg.Header.Get("Subject")
+	}
+
+	if s, err := wordDec.DecodeHeader(msg.Header.Get("From")); err == nil {
+		sender = s
+	} else {
+		sender = msg.Header.Get("From")
+	}
+
+	contentTypeHeader := msg.Header.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(contentTypeHeader)
+	if err != nil {
+		mediaType = "text/plain"
+	}
+
+	decodeBody := func(r io.Reader, enc string) []byte {
+		rawBytes, _ := io.ReadAll(r)
+		if len(rawBytes) == 0 {
+			return nil
+		}
+		enc = strings.ToLower(strings.TrimSpace(enc))
+		if enc == "quoted-printable" {
+			qpReader := quotedprintable.NewReader(bytes.NewReader(rawBytes))
+			if decoded, err := io.ReadAll(qpReader); err == nil && len(decoded) > 0 {
+				return decoded
+			}
+		} else if enc == "base64" {
+			clean := strings.Map(func(r rune) rune {
+				if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+					return -1
+				}
+				return r
+			}, string(rawBytes))
+			if decoded, err := base64.StdEncoding.DecodeString(clean); err == nil && len(decoded) > 0 {
+				return decoded
+			}
+		}
+		return rawBytes
+	}
+
+	if strings.HasPrefix(mediaType, "multipart/") {
+		boundary := params["boundary"]
+		if boundary != "" {
+			mr := multipart.NewReader(msg.Body, boundary)
+			for {
+				part, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				partMediaType, _, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
+				partEncoding := part.Header.Get("Content-Transfer-Encoding")
+				data := decodeBody(part, partEncoding)
+				if strings.EqualFold(partMediaType, "text/html") {
+					htmlContent = string(data)
+				} else if strings.EqualFold(partMediaType, "text/plain") && textContent == "" {
+					textContent = string(data)
+				}
+			}
+		}
+	} else {
+		transferEncoding := msg.Header.Get("Content-Transfer-Encoding")
+		data := decodeBody(msg.Body, transferEncoding)
+		if strings.EqualFold(mediaType, "text/html") {
+			htmlContent = string(data)
+		} else {
+			textContent = string(data)
+		}
+	}
+
+	if textContent == "" && htmlContent == "" {
+		parts := strings.SplitN(rawText, "\r\n\r\n", 2)
+		if len(parts) < 2 {
+			parts = strings.SplitN(rawText, "\n\n", 2)
+		}
+		if len(parts) == 2 {
+			textContent = parts[1]
+		} else {
+			textContent = rawText
+		}
+	}
+
+	return
+}
+
 func normalizeGenericMailMessage(item map[string]any) map[string]any {
 	if item == nil {
 		return nil
@@ -3983,15 +4097,39 @@ func normalizeGenericMailMessage(item map[string]any) map[string]any {
 		}
 		htmlContent = strings.Join(parts, "")
 	}
-	sender := firstNonEmpty(strAny(item["from_address"], ""), strAny(item["sender"], ""), strAny(item["from"], ""))
+	sender := firstNonEmpty(
+		strAny(item["from_address"], ""),
+		strAny(item["sender"], ""),
+		strAny(item["source"], ""),
+		strAny(item["from"], ""),
+	)
 	if senderMap, ok := item["from"].(map[string]any); ok {
 		sender = firstNonEmpty(strAny(senderMap["address"], ""), strAny(senderMap["email"], ""), strAny(senderMap["name"], ""), sender)
 	}
+	subject := strAny(item["subject"], "")
+
+	rawText := strings.TrimSpace(strAny(item["raw"], ""))
+	if rawText != "" && (textContent == "" && htmlContent == "" || subject == "" || sender == "") {
+		rawSub, rawSender, rawTextContent, rawHTMLContent := parseRawMail(rawText)
+		if subject == "" {
+			subject = rawSub
+		}
+		if sender == "" {
+			sender = rawSender
+		}
+		if textContent == "" {
+			textContent = rawTextContent
+		}
+		if htmlContent == "" {
+			htmlContent = rawHTMLContent
+		}
+	}
+
 	return map[string]any{
 		"provider":     strAny(item["provider"], ""),
 		"mailbox":      firstNonEmpty(strAny(item["mailbox"], ""), strAny(item["address"], ""), strAny(item["email"], "")),
 		"message_id":   firstNonEmpty(strAny(item["message_id"], ""), strAny(item["id"], ""), strAny(item["_id"], ""), strAny(item["token"], "")),
-		"subject":      strAny(item["subject"], ""),
+		"subject":      subject,
 		"sender":       sender,
 		"text_content": textContent,
 		"html_content": htmlContent,

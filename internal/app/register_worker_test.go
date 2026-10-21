@@ -492,6 +492,42 @@ func TestNormalizeGenericMailMessageExtractsBodyFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeGenericMailMessageParsesRawRFC822(t *testing.T) {
+	rawEML := strings.Join([]string{
+		"From: OpenAI <noreply@tm.openai.com>",
+		"Subject: Your temporary OpenAI verification code",
+		"Content-Type: text/html; charset=utf-8",
+		"Content-Transfer-Encoding: quoted-printable",
+		"",
+		"<html><body>",
+		"<p>verification code to continue:</p>",
+		`<p style=3D"background-color: #F3F3F3; color: #5D5D5D;">186746</p>`,
+		"</body></html>",
+	}, "\r\n")
+
+	item := map[string]any{
+		"id":         4931,
+		"source":     "bounces@em7877.tm.openai.com",
+		"address":    "d8f56rby@work-dev.fkai2.com",
+		"raw":        rawEML,
+		"created_at": "2026-10-21 07:07:30",
+	}
+
+	norm := normalizeGenericMailMessage(item)
+	if !registerMessageHasContent(norm) {
+		t.Fatalf("expected registerMessageHasContent to be true, got false, norm=%#v", norm)
+	}
+	if got := extractRegisterCode(norm); got != "186746" {
+		t.Fatalf("extractRegisterCode = %q, want 186746", got)
+	}
+	if norm["subject"] != "Your temporary OpenAI verification code" {
+		t.Fatalf("subject = %q, want 'Your temporary OpenAI verification code'", norm["subject"])
+	}
+	if norm["sender"] != "OpenAI <noreply@tm.openai.com>" {
+		t.Fatalf("sender = %q, want 'OpenAI <noreply@tm.openai.com>'", norm["sender"])
+	}
+}
+
 func TestExtractRegisterCodePrefersVerificationPhrase(t *testing.T) {
 	message := map[string]any{
 		"subject":      "Noise 111111",
