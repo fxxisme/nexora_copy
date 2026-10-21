@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -101,5 +103,84 @@ func (s *Server) releaseImageProxyRoute(key string) {
 	if s.imageEgressNotify != nil {
 		close(s.imageEgressNotify)
 		s.imageEgressNotify = make(chan struct{})
+	}
+}
+
+func (s *Server) formatProxyRouteLabel(route proxyRoute) string {
+	if route.URL == "" {
+		return "直连"
+	}
+	safeURL := safeURLForLog(route.URL)
+	if route.NodeID != "" && s.store != nil {
+		if groups, err := s.store.LoadProxyGroups(); err == nil {
+			for _, g := range groups {
+				for _, n := range g.Nodes {
+					if n.ID == route.NodeID {
+						if strings.TrimSpace(n.Name) != "" {
+							return fmt.Sprintf("%s (%s)", n.Name, safeURL)
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+	return safeURL
+}
+
+type imageProxyTrackerKey struct{}
+
+type imageProxyTracker struct {
+	mu      sync.Mutex
+	proxies []string
+}
+
+func (t *imageProxyTracker) add(p string) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, existing := range t.proxies {
+		if existing == p {
+			return
+		}
+	}
+	t.proxies = append(t.proxies, p)
+}
+
+func (t *imageProxyTracker) String() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.proxies) == 0 {
+		return ""
+	}
+	return strings.Join(t.proxies, ", ")
+}
+
+func withImageProxyTracker(ctx context.Context, tracker *imageProxyTracker) context.Context {
+	if tracker == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, imageProxyTrackerKey{}, tracker)
+}
+
+func imageProxyTrackerFromContext(ctx context.Context) *imageProxyTracker {
+	if ctx == nil {
+		return nil
+	}
+	if t, ok := ctx.Value(imageProxyTrackerKey{}).(*imageProxyTracker); ok {
+		return t
+	}
+	return nil
+}
+
+func recordImageProxyAttempt(ctx context.Context, label string) {
+	if t := imageProxyTrackerFromContext(ctx); t != nil {
+		t.add(label)
 	}
 }

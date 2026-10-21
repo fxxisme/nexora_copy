@@ -108,6 +108,9 @@ func (s *Server) generateImageWithReservedEgress(ctx context.Context, client *Up
 }
 
 func (s *Server) generateImageWithReservedEgressExcluding(ctx context.Context, client *UpstreamClient, account Account, prompt, model, size, resolution string, refs [][]byte, excluded map[string]bool) ([]upstreamImageResult, *UpstreamClient, error) {
+	if client != nil {
+		recordImageProxyAttempt(ctx, s.formatProxyRouteLabel(client.proxyRoute))
+	}
 	route, release, err := s.acquireImageProxyRouteExcluding(ctx, client.proxyRoute, excluded)
 	if err != nil {
 		return nil, client, err
@@ -119,7 +122,12 @@ func (s *Server) generateImageWithReservedEgressExcluding(ctx context.Context, c
 			return nil, client, &proxyConnectionError{cause: redactProxyTransportError(err, route.URL)}
 		}
 	}
+	proxyLabel := s.formatProxyRouteLabel(route)
+	recordImageProxyAttempt(ctx, proxyLabel)
 	items, err := client.GenerateImage(ctx, prompt, model, size, resolution, refs, s.imageGenerationOptions())
+	for i := range items {
+		items[i].Proxy = proxyLabel
+	}
 	return items, client, err
 }
 

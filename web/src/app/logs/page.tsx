@@ -27,6 +27,28 @@ const typeLabels: Record<string, string> = {
   [LogType.Account]: "账号管理日志",
 };
 
+const detailKeyLabels: Record<string, string> = {
+  call_id: "调用 ID",
+  endpoint: "请求接口",
+  model: "调用模型",
+  action: "操作类型",
+  status: "状态",
+  duration_ms: "耗时 (ms)",
+  proxy: "出站代理",
+  image_count: "生成张数",
+  failed_count: "失败张数",
+  task_id: "任务 ID",
+  subject_id: "用户 ID",
+  role: "角色",
+  name: "用户名",
+  key_name: "令牌名称",
+  error: "错误信息",
+  request_text: "请求内容",
+  stream: "流式输出",
+  image: "图像生成",
+  n: "请求数量",
+};
+
 function getDetailText(item: SystemLog, key: string) {
   const value = item.detail?.[key];
   return typeof value === "string" || typeof value === "number" ? String(value) : "-";
@@ -286,7 +308,16 @@ function LogsContent() {
                           )}
                         </TableCell>
                       ) : null}
-                      <TableCell className="max-w-[420px] truncate text-muted-foreground">{item.summary || "-"}</TableCell>
+                      <TableCell className="max-w-[420px] text-muted-foreground">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="truncate">{item.summary || "-"}</span>
+                          {item.detail?.proxy ? (
+                            <span className="inline-flex max-w-[200px] truncate items-center rounded border border-border/80 bg-muted/50 px-1.5 py-0.5 text-[11px] text-muted-foreground font-mono" title={`出站代理: ${item.detail.proxy}`}>
+                              {String(item.detail.proxy)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
                           <Button variant="ghost" className="h-8 rounded-lg px-3 text-muted-foreground" onClick={() => openDetail(item)}>
@@ -327,7 +358,7 @@ function LogsContent() {
                   .filter(([key, value]) => key !== "urls" && typeof value !== "object")
                   .map(([key, value]) => (
                     <div key={key} className="flex items-start justify-between gap-4">
-                      <span className="text-muted-foreground">{key}</span>
+                      <span className="text-muted-foreground">{detailKeyLabels[key] || key}</span>
                       <span className="text-right font-medium break-all text-foreground">{String(value)}</span>
                     </div>
                   ))}

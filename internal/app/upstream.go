@@ -68,6 +68,7 @@ type chatRequirements struct{ Token, ProofToken, TurnstileToken, SOToken string 
 type upstreamImageResult struct {
 	Bytes         []byte
 	RevisedPrompt string
+	Proxy         string
 }
 
 type upstreamStatusError struct {

@@ -52,7 +52,7 @@ func (l *logService) addWithID(id, typ, summary string, detail map[string]any) {
 		outcome := strAny(detail["status"], "")
 		endpoint := strAny(detail["endpoint"], "")
 		model := strAny(detail["model"], "")
-		search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], "")}, " "))
+		search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], ""), strAny(detail["proxy"], "")}, " "))
 		stmt := "INSERT INTO app_logs (id, payload, event_time, event_day, log_type, outcome, endpoint, model, search_text) VALUES (" + l.store.bind(1) + ", " + l.store.bind(2) + ", " + l.store.bind(3) + ", " + l.store.bind(4) + ", " + l.store.bind(5) + ", " + l.store.bind(6) + ", " + l.store.bind(7) + ", " + l.store.bind(8) + ", " + l.store.bind(9) + ")"
 		if _, err := l.store.db.Exec(stmt, item["id"], string(data), timeValue, day, typ, outcome, endpoint, model, search); err != nil {
 			log.Printf("storage append log: %v", err)
@@ -110,7 +110,7 @@ func (l *logService) updateOrAdd(callID, typ, summary string, detail map[string]
 			outcome := strAny(detail["status"], "")
 			endpoint := strAny(detail["endpoint"], "")
 			model := strAny(detail["model"], "")
-			search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], "")}, " "))
+			search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], ""), strAny(detail["proxy"], "")}, " "))
 
 			stmt := "UPDATE app_logs SET payload=" + l.store.bind(1) + ", outcome=" + l.store.bind(2) + ", endpoint=" + l.store.bind(3) + ", model=" + l.store.bind(4) + ", search_text=" + l.store.bind(5) + " WHERE id=" + l.store.bind(6)
 			res, err := l.store.db.Exec(stmt, string(data), outcome, endpoint, model, search, callID)
@@ -142,7 +142,7 @@ func (l *logService) updateOrAdd(callID, typ, summary string, detail map[string]
 		outcome := strAny(detail["status"], "")
 		endpoint := strAny(detail["endpoint"], "")
 		model := strAny(detail["model"], "")
-		search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], "")}, " "))
+		search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], ""), strAny(detail["proxy"], "")}, " "))
 		stmt := "INSERT INTO app_logs (id, payload, event_time, event_day, log_type, outcome, endpoint, model, search_text) VALUES (" + l.store.bind(1) + ", " + l.store.bind(2) + ", " + l.store.bind(3) + ", " + l.store.bind(4) + ", " + l.store.bind(5) + ", " + l.store.bind(6) + ", " + l.store.bind(7) + ", " + l.store.bind(8) + ", " + l.store.bind(9) + ")"
 		if _, err := l.store.db.Exec(stmt, item["id"], string(data), timeValue, day, typ, outcome, endpoint, model, search); err != nil {
 			log.Printf("storage append log: %v", err)

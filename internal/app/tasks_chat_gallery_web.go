@@ -531,12 +531,18 @@ func (s *Server) handleImageTaskGeneration(w http.ResponseWriter, r *http.Reques
 		_, _ = s.updateTaskProgress(task.OwnerID, task.ID, "generating", "上游生成中")
 		runCtx, stop := context.WithTimeout(ctx, s.imageRequestTimeout())
 		defer stop()
+		proxyTracker := &imageProxyTracker{}
+		runCtx = withImageProxyTracker(runCtx, proxyTracker)
 		generated, generationErr := collectImageTaskGenerations(runCtx, b.N, func(ctx context.Context) ([]upstreamImageResult, error) {
 			return s.generateImageWithPool(ctx, b.Prompt, b.Model, b.Size, b.Resolution, nil)
 		})
 		if runCtx.Err() != nil {
 			settle("canceled", "canceled", nil)
-			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", errors.New("canceled"), map[string]any{"task_id": task.ID})
+			failFields := map[string]any{"task_id": task.ID}
+			if p := proxyTracker.String(); p != "" {
+				failFields["proxy"] = p
+			}
+			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", errors.New("canceled"), failFields)
 			return
 		}
 		if len(generated) == 0 {
@@ -544,14 +550,22 @@ func (s *Server) handleImageTaskGeneration(w http.ResponseWriter, r *http.Reques
 				generationErr = errNoImageGenerated
 			}
 			settle("error", generationErr.Error(), nil)
-			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", generationErr, map[string]any{"task_id": task.ID})
+			failFields := map[string]any{"task_id": task.ID}
+			if p := proxyTracker.String(); p != "" {
+				failFields["proxy"] = p
+			}
+			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", generationErr, failFields)
 			return
 		}
 		_, _ = s.updateTaskProgress(task.OwnerID, task.ID, "saving", "保存图片")
 		data, rels, saveErr := s.saveImageTaskResults(runCtx, baseURL, b.Prompt, generated)
 		if runCtx.Err() != nil {
 			settle("canceled", "canceled", nil)
-			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", errors.New("canceled"), map[string]any{"task_id": task.ID})
+			failFields := map[string]any{"task_id": task.ID}
+			if p := proxyTracker.String(); p != "" {
+				failFields["proxy"] = p
+			}
+			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", errors.New("canceled"), failFields)
 			return
 		}
 		resultErr := errors.Join(generationErr, saveErr)
@@ -560,11 +574,18 @@ func (s *Server) handleImageTaskGeneration(w http.ResponseWriter, r *http.Reques
 				resultErr = errNoImageGenerated
 			}
 			settle("error", resultErr.Error(), nil)
-			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", resultErr, map[string]any{"task_id": task.ID})
+			failFields := map[string]any{"task_id": task.ID}
+			if p := proxyTracker.String(); p != "" {
+				failFields["proxy"] = p
+			}
+			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", resultErr, failFields)
 			return
 		}
 		status, errText := "success", ""
 		logFields := map[string]any{"task_id": task.ID, "image_count": len(data), "n": b.N}
+		if p := proxyTracker.String(); p != "" {
+			logFields["proxy"] = p
+		}
 		if len(data) < b.N {
 			status = "partial_success"
 			logFields["status"] = status
@@ -575,7 +596,11 @@ func (s *Server) handleImageTaskGeneration(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		if updated, err := settle(status, errText, data); err != nil {
-			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", err, map[string]any{"task_id": task.ID, "image_count": len(data)})
+			failFields := map[string]any{"task_id": task.ID, "image_count": len(data)}
+			if p := proxyTracker.String(); p != "" {
+				failFields["proxy"] = p
+			}
+			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", err, failFields)
 		} else if updated {
 			for _, rel := range rels {
 				s.recordOwner(identity, rel)
@@ -583,7 +608,11 @@ func (s *Server) handleImageTaskGeneration(w http.ResponseWriter, r *http.Reques
 			}
 			s.logCallSuccess(callID, "/api/image-tasks/generations", b.Model, "文生图任务", logFields)
 		} else {
-			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", errors.New("task result discarded after cancellation"), map[string]any{"task_id": task.ID})
+			failFields := map[string]any{"task_id": task.ID}
+			if p := proxyTracker.String(); p != "" {
+				failFields["proxy"] = p
+			}
+			s.logCallFailure(callID, "/api/image-tasks/generations", b.Model, "文生图任务", errors.New("task result discarded after cancellation"), failFields)
 		}
 	}}
 	if !runner.submit(job) {
@@ -758,23 +787,29 @@ func (s *Server) handleImageTaskEdit(w http.ResponseWriter, r *http.Request) {
 		}
 		runCtx, stop := context.WithTimeout(ctx, s.imageRequestTimeout())
 		defer stop()
+		proxyTracker := &imageProxyTracker{}
+		runCtx = withImageProxyTracker(runCtx, proxyTracker)
 		items, err := s.generateImageWithPool(runCtx, prompt, model, task.Size, task.Resolution, inputs)
 		if err == nil && len(items) == 0 {
 			err = errors.New("image generation returned no images")
 		}
+		failFields := map[string]any{"task_id": task.ID}
+		if p := proxyTracker.String(); p != "" {
+			failFields["proxy"] = p
+		}
 		if err != nil {
 			if runCtx.Err() != nil {
 				settle("canceled", "canceled", nil)
-				s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("canceled"), map[string]any{"task_id": task.ID})
+				s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("canceled"), failFields)
 			} else {
 				settle("error", err.Error(), nil)
-				s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", err, map[string]any{"task_id": task.ID})
+				s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", err, failFields)
 			}
 			return
 		}
 		if runCtx.Err() != nil {
 			settle("canceled", "canceled", nil)
-			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("canceled"), map[string]any{"task_id": task.ID})
+			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("canceled"), failFields)
 			return
 		}
 		_, _ = s.updateTaskProgress(task.OwnerID, task.ID, "saving", "保存图片")
@@ -782,23 +817,27 @@ func (s *Server) handleImageTaskEdit(w http.ResponseWriter, r *http.Request) {
 		rel, url, err := s.saveImageWithBaseURL(baseURL, res.Bytes)
 		if err != nil {
 			settle("error", err.Error(), nil)
-			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", err, map[string]any{"task_id": task.ID})
+			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", err, failFields)
 			return
 		}
 		if runCtx.Err() != nil {
 			settle("canceled", "canceled", nil)
-			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("canceled"), map[string]any{"task_id": task.ID})
+			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("canceled"), failFields)
 			return
 		}
 		data := []map[string]any{{"url": url, "b64_json": base64.StdEncoding.EncodeToString(res.Bytes), "revised_prompt": firstNonEmpty(res.RevisedPrompt, prompt)}}
+		logFields := map[string]any{"task_id": task.ID, "image_count": len(data)}
+		if p := proxyTracker.String(); p != "" {
+			logFields["proxy"] = p
+		}
 		if updated, err := settle("success", "", data); err != nil {
-			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", err, map[string]any{"task_id": task.ID})
+			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", err, logFields)
 		} else if updated {
 			s.recordOwner(identity, rel)
 			s.recordPrompt(rel, prompt, true)
-			s.logCallSuccess(callID, "/api/image-tasks/edits", model, "图生图任务", map[string]any{"task_id": task.ID, "image_count": len(data)})
+			s.logCallSuccess(callID, "/api/image-tasks/edits", model, "图生图任务", logFields)
 		} else {
-			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("task result discarded after cancellation"), map[string]any{"task_id": task.ID})
+			s.logCallFailure(callID, "/api/image-tasks/edits", model, "图生图任务", errors.New("task result discarded after cancellation"), logFields)
 		}
 	}}
 	if !runner.submit(job) {
@@ -1053,12 +1092,18 @@ func (s *Server) handleChatStreamImage(w http.ResponseWriter, r *http.Request, i
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.imageRequestTimeout())
 	defer cancel()
+	proxyTracker := &imageProxyTracker{}
+	ctx = withImageProxyTracker(ctx, proxyTracker)
 	items, err := s.generateImageWithPool(ctx, prompt, model, strAny(b["size"], ""), strAny(b["resolution"], ""), extractChatImages(b))
 	w.Header().Set("Content-Type", "text/event-stream")
 	cid := "conv_" + randID(8)
 	if err != nil {
 		s.refundImage(id, 1)
-		s.logCallFailure(callID, "/api/chat/stream", model, "聊天", err, map[string]any{"image": true})
+		failFields := map[string]any{"image": true}
+		if p := proxyTracker.String(); p != "" {
+			failFields["proxy"] = p
+		}
+		s.logCallFailure(callID, "/api/chat/stream", model, "聊天", err, failFields)
 		sse(w, map[string]any{"type": "conversation.error", "error": err.Error(), "done": true})
 		sseDone(w)
 		return
@@ -1078,7 +1123,11 @@ func (s *Server) handleChatStreamImage(w http.ResponseWriter, r *http.Request, i
 		break
 	}
 	text := buildChatImageMarkdown(data)
-	s.logCallSuccess(callID, "/api/chat/stream", model, "聊天", map[string]any{"image": true, "image_count": len(data)})
+	successFields := map[string]any{"image": true, "image_count": len(data)}
+	if p := proxyTracker.String(); p != "" {
+		successFields["proxy"] = p
+	}
+	s.logCallSuccess(callID, "/api/chat/stream", model, "聊天", successFields)
 	sse(w, map[string]any{"type": "conversation.delta", "delta": text, "text": text, "conversation_id": cid, "done": false})
 	sse(w, map[string]any{"type": "conversation.done", "text": text, "conversation_id": cid, "done": true})
 	sseDone(w)

@@ -61,10 +61,16 @@ func (s *Server) imageResult(w http.ResponseWriter, r *http.Request, id *Identit
 	refs := inputs
 	ctx, cancel := context.WithTimeout(r.Context(), s.imageRequestTimeout())
 	defer cancel()
+	proxyTracker := &imageProxyTracker{}
+	ctx = withImageProxyTracker(ctx, proxyTracker)
 	items, err := s.generateImagesWithPool(ctx, prompt, model, size, resolution, refs, n)
 	if err != nil {
 		s.refundImage(id, n)
-		s.logCallFailure(callID, endpoint, model, action, err, map[string]any{"n": n})
+		failFields := map[string]any{"n": n}
+		if p := proxyTracker.String(); p != "" {
+			failFields["proxy"] = p
+		}
+		s.logCallFailure(callID, endpoint, model, action, err, failFields)
 		writeErr(w, 502, err.Error())
 		return
 	}
@@ -93,6 +99,9 @@ func (s *Server) imageResult(w http.ResponseWriter, r *http.Request, id *Identit
 		return
 	}
 	logFields := map[string]any{"n": n, "image_count": len(data)}
+	if p := proxyTracker.String(); p != "" {
+		logFields["proxy"] = p
+	}
 	if len(data) < n {
 		logFields["status"] = "partial_success"
 		logFields["failed_count"] = n - len(data)
@@ -729,6 +738,8 @@ func (s *Server) imageResultStream(w http.ResponseWriter, r *http.Request, id *I
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.imageRequestTimeout())
 	defer cancel()
+	proxyTracker := &imageProxyTracker{}
+	ctx = withImageProxyTracker(ctx, proxyTracker)
 	refs := inputs
 	w.Header().Set("Content-Type", "text/event-stream")
 	created := time.Now().Unix()
@@ -745,6 +756,9 @@ func (s *Server) imageResultStream(w http.ResponseWriter, r *http.Request, id *I
 	})
 	s.refundImage(id, n-succeeded)
 	logFields := map[string]any{"n": n, "image_count": succeeded}
+	if p := proxyTracker.String(); p != "" {
+		logFields["proxy"] = p
+	}
 	if succeeded == 0 {
 		s.logCallFailure(callID, "/v1/images/generations", model, "文生图", firstErr, logFields)
 	} else {
