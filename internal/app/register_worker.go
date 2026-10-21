@@ -953,8 +953,8 @@ func (s *registerSession) createSentinelToken(ctx context.Context, deviceID, flo
 	turnstile, _ := data["turnstile"].(map[string]any)
 	turnstileRequired := boolAny(turnstile["required"], false)
 	turnstileDx := strings.TrimSpace(strAny(turnstile["dx"], ""))
-	if s.solverURL != "" && (turnstileRequired || turnstileDx != "" || flow == "oauth_create_account") {
-		solvedToken, solveErr := s.solveTurnstileWithSolver(ctx, turnstileDx, pValue, data)
+	if s.solverURL != "" && (turnstileRequired || turnstileDx != "") {
+		solvedToken, solveErr := s.solveTurnstileWithSolver(ctx, turnstileDx, p, data)
 		if solveErr == nil && solvedToken != "" {
 			tValue = solvedToken
 		} else if turnstileRequired {
