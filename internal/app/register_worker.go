@@ -68,6 +68,8 @@ type registerSession struct {
 	lastAuthorizeDebug   registerFlowDebug
 	lastValidateOTPDebug registerFlowDebug
 	lastCreateDebug      registerFlowDebug
+	solverURL            string
+	solverKey            string
 }
 
 type registerFlowDebug struct {
@@ -78,6 +80,7 @@ type registerFlowDebug struct {
 	Flow                 string
 	SOTokenPresent       bool
 	SentinelTokenPresent bool
+	TurnstilePresent     bool
 	AccessFlowIDPresent  bool
 }
 
@@ -101,6 +104,7 @@ func (d registerFlowDebug) String() string {
 	parts = append(parts,
 		fmt.Sprintf("so_token_present=%t", d.SOTokenPresent),
 		fmt.Sprintf("sentinel_token_present=%t", d.SentinelTokenPresent),
+		fmt.Sprintf("turnstile_present=%t", d.TurnstilePresent),
 		fmt.Sprintf("access_flow_id_present=%t", d.AccessFlowIDPresent),
 	)
 	return strings.Join(parts, " ")
@@ -130,7 +134,7 @@ type registerProvider interface {
 	Close()
 }
 
-func newRegisterSession(proxy string, timeout int, binGetter func() (string, error)) (*registerSession, error) {
+func newRegisterSession(proxy string, timeout int, binGetter func() (string, error), solvers ...string) (*registerSession, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
@@ -155,7 +159,21 @@ func newRegisterSession(proxy string, timeout int, binGetter func() (string, err
 			curl = c
 		}
 	}
-	return &registerSession{
+	solverURL := ""
+	solverKey := ""
+	if len(solvers) > 0 {
+		solverURL = strings.TrimSpace(solvers[0])
+	}
+	if len(solvers) > 1 {
+		solverKey = strings.TrimSpace(solvers[1])
+	}
+	if solverURL == "" {
+		solverURL = strings.TrimSpace(os.Getenv("CHATGPT2API_SENTINEL_SOLVER_URL"))
+	}
+	if solverKey == "" {
+		solverKey = strings.TrimSpace(os.Getenv("CHATGPT2API_SENTINEL_SOLVER_KEY"))
+	}
+	sess := &registerSession{
 		client:             client,
 		curl:               curl,
 		userAgent:          fp.userAgent,
@@ -167,7 +185,11 @@ func newRegisterSession(proxy string, timeout int, binGetter func() (string, err
 		accessFlowID:       uuid4(),
 		sentinelSOToken:    strings.TrimSpace(os.Getenv("CHATGPT2API_REGISTER_SENTINEL_SO_TOKEN")),
 		browser:            fp.browser,
-	}, nil
+		solverURL:          solverURL,
+		solverKey:          solverKey,
+	}
+	sess.syncWithSolver(context.Background())
+	return sess, nil
 }
 
 func newProxyHTTPTransport(rawProxy string) (*stdhttp.Transport, error) {
@@ -798,6 +820,90 @@ func isRegisterCloudflareChallenge(status int, lowerBody string) bool {
 		strings.Contains(lowerBody, "cf-browser-verification")
 }
 
+func (s *registerSession) syncWithSolver(ctx context.Context) {
+	if s == nil || s.solverURL == "" {
+		return
+	}
+	healthURL := strings.TrimRight(s.solverURL, "/") + "/health"
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, healthURL, nil)
+	if err != nil {
+		return
+	}
+	if s.solverKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.solverKey)
+	}
+	client := &stdhttp.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != stdhttp.StatusOK {
+		return
+	}
+	var health struct {
+		Ready     bool   `json:"ready"`
+		UserAgent string `json:"user_agent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err == nil && health.Ready && strings.TrimSpace(health.UserAgent) != "" {
+		s.userAgent = strings.TrimSpace(health.UserAgent)
+		if strings.Contains(s.userAgent, "Chrome/") {
+			parts := strings.Split(s.userAgent, "Chrome/")
+			if len(parts) > 1 {
+				major := strings.Split(parts[1], ".")[0]
+				s.secCHUA = fmt.Sprintf(`"Google Chrome";v="%s", "Not?A_Brand";v="8", "Chromium";v="%s"`, major, major)
+			}
+		}
+	}
+}
+
+func (s *registerSession) solveTurnstileWithSolver(ctx context.Context, dx, p string, requirements map[string]any) (string, error) {
+	if s == nil || s.solverURL == "" {
+		return "", errors.New("sentinel solver not configured")
+	}
+	endpoint := strings.TrimRight(s.solverURL, "/") + "/v1/turnstile"
+	bodyBytes, err := json.Marshal(map[string]any{
+		"dx":           dx,
+		"p":            p,
+		"requirements": requirements,
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.solverKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.solverKey)
+	}
+	client := &stdhttp.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("sentinel solver request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != stdhttp.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return "", fmt.Errorf("sentinel solver HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode sentinel solver response: %w", err)
+	}
+	token := strings.TrimSpace(result.Token)
+	if token == "" {
+		return "", errors.New("sentinel solver returned empty token")
+	}
+	if reason := invalidSentinelToken(token, p); reason != "" {
+		return "", fmt.Errorf("sentinel solver returned invalid token: %s", reason)
+	}
+	return token, nil
+}
+
 func (s *registerSession) createSentinelToken(ctx context.Context, deviceID, flow string) (string, error) {
 	p := sentinelRequirementsToken(deviceID, s.userAgent)
 	body := map[string]any{"p": p, "id": deviceID, "flow": flow}
@@ -843,8 +949,20 @@ func (s *registerSession) createSentinelToken(ctx context.Context, deviceID, flo
 	if boolAny(pow["required"], false) && strings.TrimSpace(strAny(pow["seed"], "")) != "" {
 		pValue = sentinelProofToken(deviceID, s.userAgent, strAny(pow["seed"], ""), strAny(pow["difficulty"], "0"))
 	}
+	tValue := ""
+	turnstile, _ := data["turnstile"].(map[string]any)
+	turnstileRequired := boolAny(turnstile["required"], false)
+	turnstileDx := strings.TrimSpace(strAny(turnstile["dx"], ""))
+	if s.solverURL != "" && (turnstileRequired || turnstileDx != "" || flow == "oauth_create_account") {
+		solvedToken, solveErr := s.solveTurnstileWithSolver(ctx, turnstileDx, pValue, data)
+		if solveErr == nil && solvedToken != "" {
+			tValue = solvedToken
+		} else if turnstileRequired {
+			return "", fmt.Errorf("sentinel turnstile required but solve failed: %w", solveErr)
+		}
+	}
 	s.setAuthCookie("oai-sc", "0"+token)
-	out, _ := json.Marshal(map[string]any{"p": pValue, "t": "", "c": token, "id": deviceID, "flow": flow})
+	out, _ := json.Marshal(map[string]any{"p": pValue, "t": tValue, "c": token, "id": deviceID, "flow": flow})
 	return string(out), nil
 }
 
@@ -1443,6 +1561,7 @@ func (s *registerSession) validateOTPContinueURL(ctx context.Context, deviceID, 
 		Flow:                 "email_otp_validate",
 		SOTokenPresent:       strings.TrimSpace(s.sentinelSOToken) != "",
 		SentinelTokenPresent: sentinelPresent,
+		TurnstilePresent:     strings.Contains(sentinel, `"t":"0.`) || (strings.Contains(sentinel, `"t":"`) && !strings.Contains(sentinel, `"t":""`)),
 		AccessFlowIDPresent:  strings.TrimSpace(s.accessFlowID) != "",
 	}
 	text, resp, err := s.requestTextResponse(ctx, stdhttp.MethodPost, rawURL, headers, map[string]any{"code": code}, 200, 302)
@@ -1503,6 +1622,7 @@ func (s *registerSession) createAccount(ctx context.Context, deviceID string, pr
 			Flow:                 "oauth_create_account",
 			SOTokenPresent:       strings.TrimSpace(s.sentinelSOToken) != "",
 			SentinelTokenPresent: strings.TrimSpace(sentinel) != "",
+			TurnstilePresent:     strings.Contains(sentinel, `"t":"0.`) || (strings.Contains(sentinel, `"t":"`) && !strings.Contains(sentinel, `"t":""`)),
 			AccessFlowIDPresent:  strings.TrimSpace(s.accessFlowID) != "",
 		}
 		text, resp, err := s.requestTextResponse(ctx, stdhttp.MethodPost, registerAuthBase+"/api/accounts/create_account", headers, body, 200, 302)
@@ -2530,7 +2650,13 @@ func (s *registerService) createProvider(mail RegisterMailConfig) (registerProvi
 	if s.server != nil {
 		binGetter = s.server.ensureCurlImpersonateBinary
 	}
-	sess, err := newRegisterSession(proxy, mail.RequestTimeout, binGetter)
+	solverURL := ""
+	solverKey := ""
+	if s.server != nil {
+		solverURL = s.server.cfg.SentinelSolverURL
+		solverKey = s.server.cfg.SentinelSolverKey
+	}
+	sess, err := newRegisterSession(proxy, mail.RequestTimeout, binGetter, solverURL, solverKey)
 	if err != nil {
 		return nil, err
 	}
@@ -2561,7 +2687,7 @@ func (s *registerService) createProvider(mail RegisterMailConfig) (registerProvi
 	case "icloud_api":
 		provider := &iCloudAPIRegisterProvider{registerProviderBase: registerProviderBase{sess: sess}, entry: entry}
 		if !mail.APIUseRegisterProxy {
-			provider.mailSess, err = newRegisterSession("", mail.RequestTimeout, nil)
+			provider.mailSess, err = newRegisterSession("", mail.RequestTimeout, nil, solverURL, solverKey)
 			if err != nil {
 				sess.close()
 				return nil, err

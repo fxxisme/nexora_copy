@@ -1022,3 +1022,46 @@ func TestGPTMailAuthHeaders(t *testing.T) {
 		t.Fatalf("missing Authorization bearer: %#v", headers)
 	}
 }
+func TestRegisterSessionWithSentinelSolver(t *testing.T) {
+	mockSolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ready":      true,
+				"user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+			})
+		case "/v1/turnstile":
+			if r.Header.Get("Authorization") != "Bearer secret-key" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"token": "0.mock_turnstile_token_success",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockSolver.Close()
+
+	session, err := newRegisterSession("", 2, nil, mockSolver.URL, "secret-key")
+	if err != nil {
+		t.Fatalf("newRegisterSession: %v", err)
+	}
+	if session.solverURL != mockSolver.URL {
+		t.Fatalf("solverURL = %q, want %q", session.solverURL, mockSolver.URL)
+	}
+	if !strings.Contains(session.userAgent, "Chrome/146.0.0.0") {
+		t.Fatalf("userAgent not synced: %q", session.userAgent)
+	}
+
+	solved, err := session.solveTurnstileWithSolver(context.Background(), "mock_dx", "mock_p", map[string]any{"turnstile": map[string]any{"required": true}})
+	if err != nil {
+		t.Fatalf("solveTurnstileWithSolver: %v", err)
+	}
+	if solved != "0.mock_turnstile_token_success" {
+		t.Fatalf("solved token = %q, want 0.mock_turnstile_token_success", solved)
+	}
+}
