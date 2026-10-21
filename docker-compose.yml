@@ -1,6 +1,7 @@
 services:
   app:
-    build: .
+    image: ghcr.io/fxxisme/nexora:latest
+    # 如需本地构建可替换为: build: .
     container_name: nexora
     restart: unless-stopped
     ports:
@@ -12,5 +13,23 @@ services:
       # 根密钥由挂载的 config.json 提供，也可设置 CHATGPT2API_AUTH_KEY 覆盖。
       # 传输模式: tls-client（默认）| curl-impersonate
       CHATGPT2API_UPSTREAM_TRANSPORT: tls-client
+      # 关联 sentinel-solver 服务
+      CHATGPT2API_SENTINEL_SOLVER_URL: http://sentinel-solver:8080
       # 默认 SQLite 数据库位于 /app/data/chatgpt2api.db。
       # DATABASE_URL: postgresql://user:password@host:5432/dbname
+    depends_on:
+      - sentinel-solver
+
+  sentinel-solver:
+    image: ghcr.io/fxxisme/sentinel-solver:latest
+    # 如需本地构建可替换为: build: ./sentinel_solver
+    container_name: sentinel-solver
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/ms-playwright:/ms-playwright
+    environment:
+      PORT: 8080
+      # 建议配置出网代理，保持与主服务或当前机器出口一致
+      # SENTINEL_SOLVER_PROXY: "http://127.0.0.1:7897"
