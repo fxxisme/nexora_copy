@@ -42,6 +42,9 @@ type PendingCpaImport = {
   tokens: string[];
   records: AccountImportRecord[];
   parsedFileCount: number;
+  parsedAccountCount: number;
+  codexCount: number;
+  webCount: number;
   errorCount: number;
 };
 
@@ -63,6 +66,30 @@ function getCpaAccessToken(value: unknown) {
   const payload = value as { access_token?: unknown; accessToken?: unknown };
   const token = payload?.access_token ?? payload?.accessToken;
   return typeof token === "string" ? token.trim() : "";
+}
+
+function extractAccountsFromValue(
+  parsed: unknown,
+  sourceFileName?: string,
+): { tokens: string[]; records: AccountImportRecord[] } {
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  const tokens: string[] = [];
+  const records: AccountImportRecord[] = [];
+
+  for (const item of items) {
+    if (item && typeof item === "object") {
+      const token = getCpaAccessToken(item);
+      if (token) {
+        tokens.push(token);
+        records.push({
+          ...(item as Record<string, unknown>),
+          ...(sourceFileName ? { cpa_file_name: sourceFileName } : {}),
+        } as AccountImportRecord);
+      }
+    }
+  }
+
+  return { tokens, records };
 }
 
 function readFileAsText(file: File) {
@@ -112,6 +139,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
+  const [cpaJsonInput, setCpaJsonInput] = useState("");
   const [sourceType, setSourceType] = useState<AccountSourceType>("web");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingCpaImport, setPendingCpaImport] = useState<PendingCpaImport | null>(null);
@@ -124,6 +152,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     setMethod("menu");
     setTokenInput("");
     setSessionInput("");
+    setCpaJsonInput("");
     setSourceType("web");
     setPendingCpaImport(null);
     setConfirmOpen(false);
@@ -201,11 +230,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
         return;
       }
 
-      setTokenInput((prev) => {
-        const next = [...splitTokens(prev), ...tokens];
-        return next.join("\n");
-      });
-      toast.success(`已从 ${file.name} 读取 ${tokens.length} 个 Token`);
+      setTokenInput((prev) => (prev.trim() ? `${prev.trim()}\n${tokens.join("\n")}` : tokens.join("\n")));
+      toast.success(`已从 ${file.name} 追加 ${tokens.length} 个 Token`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "读取 TXT 文件失败";
       toast.error(message);
@@ -213,17 +239,18 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   };
 
   const handleImportSessionJson = async () => {
-    if (!sessionInput.trim()) {
-      toast.error("请先粘贴完整 Session JSON");
+    const raw = sessionInput.trim();
+    if (!raw) {
+      toast.error("请先粘贴 Session JSON");
       return;
     }
 
     try {
-      const payload = JSON.parse(sessionInput) as unknown;
-      const token = getSessionAccessToken(payload);
+      const parsed = JSON.parse(raw) as unknown;
+      const token = getSessionAccessToken(parsed);
 
       if (!token) {
-        toast.error("未从 Session JSON 中提取到 accessToken");
+        toast.error("未在 JSON 中找到 accessToken");
         return;
       }
 
@@ -243,44 +270,87 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     }
 
     try {
-      const results = await Promise.all(
-        files.map(async (file) => {
+      let parsedFileCount = 0;
+      let errorCount = 0;
+      const allTokens: string[] = [];
+      const allRecords: AccountImportRecord[] = [];
+
+      for (const file of files) {
+        try {
           const raw = await readFileAsText(file);
           const parsed = JSON.parse(raw) as unknown;
-          const token = getCpaAccessToken(parsed);
-          const record =
-            parsed && typeof parsed === "object"
-              ? ({ ...(parsed as Record<string, unknown>), cpa_file_name: file.name } as AccountImportRecord)
-              : null;
-          return {
-            token,
-            record,
-          };
-        }),
-      );
+          const { tokens, records } = extractAccountsFromValue(parsed, file.name);
+          if (records.length > 0) {
+            allTokens.push(...tokens);
+            allRecords.push(...records);
+            parsedFileCount++;
+          } else {
+            errorCount++;
+          }
+        } catch {
+          errorCount++;
+        }
+      }
 
-      const tokens = results.map((item) => item.token).filter((item): item is string => Boolean(item));
-      const records = results
-        .map((item) => item.record)
-        .filter((item): item is AccountImportRecord => Boolean(item && getCpaAccessToken(item)));
-      const parsedFileCount = records.length;
-      const errorCount = results.length - parsedFileCount;
-
-      if (parsedFileCount === 0) {
-        toast.error("这些 CPA JSON 文件里没有读取到可用 access_token");
+      if (allRecords.length === 0) {
+        toast.error("所选 JSON 文件里没有读取到可用 access_token");
         return;
       }
 
+      const codexCount = allRecords.filter(
+        (r) => String(r.type || r.source_type || "").toLowerCase() === "codex",
+      ).length;
+      const webCount = allRecords.length - codexCount;
+
       setPendingCpaImport({
-        tokens,
-        records,
+        tokens: allTokens,
+        records: allRecords,
         parsedFileCount,
+        parsedAccountCount: allRecords.length,
+        codexCount,
+        webCount,
         errorCount,
       });
       setConfirmOpen(true);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "读取 CPA JSON 文件失败";
+      const message = error instanceof Error ? error.message : "读取 JSON 文件失败";
       toast.error(message);
+    }
+  };
+
+  const handleParsePastedCpaJson = () => {
+    const raw = cpaJsonInput.trim();
+    if (!raw) {
+      toast.error("请先粘贴 JSON 内容");
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const { tokens, records } = extractAccountsFromValue(parsed, "pasted-json");
+
+      if (records.length === 0) {
+        toast.error("未在粘贴的内容中识别到有效的 access_token");
+        return;
+      }
+
+      const codexCount = records.filter(
+        (r) => String(r.type || r.source_type || "").toLowerCase() === "codex",
+      ).length;
+      const webCount = records.length - codexCount;
+
+      setPendingCpaImport({
+        tokens,
+        records,
+        parsedFileCount: 1,
+        parsedAccountCount: records.length,
+        codexCount,
+        webCount,
+        errorCount: 0,
+      });
+      setConfirmOpen(true);
+    } catch {
+      toast.error("JSON 格式错误，请检查语法");
     }
   };
 
@@ -415,19 +485,22 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     if (method === "cpa") {
       return (
         <div className="space-y-4">
-          <button
-            type="button"
-            onClick={() => setMethod("menu")}
-            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition hover:text-foreground"
-          >
-            <ArrowLeft className="size-4" />
-            返回导入方式
-          </button>
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setMethod("menu")}
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground transition hover:text-foreground"
+            >
+              <ArrowLeft className="size-4" />
+              返回导入方式
+            </button>
+          </div>
+
           <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-5">
             <div className="space-y-2">
-              <div className="text-sm font-medium text-foreground">多选本地 CPA JSON 文件</div>
+              <div className="text-sm font-medium text-foreground">选择本地 JSON 文件 / 备份文件</div>
               <div className="text-sm leading-6 text-muted-foreground">
-                每个文件应为一个 JSON 对象。系统会保留 `access_token`、`refresh_token`、`id_token` 等凭据字段。
+                支持导入 <strong>完整账号导出备份（如 chatgpt2api 导出的 JSON 数组）</strong> 或 <strong>多选单个 CPA JSON 文件</strong>。系统将自动完整保留 <code>access_token</code>、<code>refresh_token</code>、<code>id_token</code>、<code>email</code> 等全部凭据与账号类型。
               </div>
             </div>
             <Button
@@ -437,9 +510,30 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               disabled={isSubmitting}
             >
               <Files className="size-4" />
-              选择多个 JSON 文件
+              选择 JSON 文件（支持单文件数组或多个文件）
             </Button>
           </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">或者直接粘贴 JSON 文本</label>
+            <Textarea
+              placeholder='在此粘贴 JSON 文本（支持单个账号对象，或 [...] 完整账号数组）...'
+              value={cpaJsonInput}
+              onChange={(event) => setCpaJsonInput(event.target.value)}
+              className="min-h-32 resize-none rounded-xl border-border font-mono text-xs"
+            />
+            {cpaJsonInput.trim() ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-2 rounded-xl border-border bg-card"
+                onClick={handleParsePastedCpaJson}
+              >
+                解析粘贴的 JSON
+              </Button>
+            ) : null}
+          </div>
+
           <input
             ref={cpaInputRef}
             type="file"
@@ -448,10 +542,11 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             className="hidden"
             onChange={(event) => void handleCpaSelected(event)}
           />
+
           {pendingCpaImport ? (
             <div className="rounded-2xl border border-border bg-card p-4 text-sm leading-6 text-muted-foreground">
-              最近一次读取到 {pendingCpaImport.parsedFileCount} 个 Token
-              {pendingCpaImport.errorCount > 0 ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功` : ""}。
+              已就绪：共识别到 <strong className="text-foreground">{pendingCpaImport.parsedAccountCount}</strong> 个账号（来自 {pendingCpaImport.parsedFileCount} 个来源，其中 Codex 账号 {pendingCpaImport.codexCount} 个，Web 账号 {pendingCpaImport.webCount} 个）
+              {pendingCpaImport.errorCount > 0 ? `，另有 ${pendingCpaImport.errorCount} 个文件未能读取` : ""}。
             </div>
           ) : null}
         </div>
@@ -473,8 +568,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => setMethod("session")}
         />
         <MethodCard
-          title="导入 CPA JSON 文件"
-          description="支持一次多选多个本地 JSON 文件，逐个读取对象里的 access_token 后导入。"
+          title="导入 JSON 账号备份 / CPA 文件"
+          description="支持导入 chatgpt2api 导出的完整备份（JSON 数组）或多个 CPA 文件，保留全部 token 与凭据元数据。"
           icon={Files}
           onClick={() => setMethod("cpa")}
         />
@@ -508,43 +603,34 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <Button
-          className="h-9 rounded-md bg-primary px-4 text-primary-foreground hover:bg-primary/90"
           onClick={() => setOpen(true)}
           disabled={disabled}
+          className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"
         >
           <Upload className="size-4" />
-          导入
+          导入账号
         </Button>
-        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+        <DialogContent className="flex max-h-[85vh] w-[min(92vw,560px)] flex-col rounded-2xl p-6">
           <DialogHeader className="gap-2">
-            <DialogTitle>
-              {method === "menu"
-                ? "导入账户"
-                : method === "token"
-                  ? "导入 Access Token"
-                  : method === "session"
-                    ? "导入 Session JSON"
-                    : "导入 CPA JSON"}
-            </DialogTitle>
+            <DialogTitle>导入账号</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              {method === "menu"
-                ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
-                : method === "token"
-                  ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
-                  : method === "session"
-                    ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
-                    : "支持一次读取多个本地 JSON 文件，并在提交前做数量确认。"}
+              请选择要导入账号的方式，支持直接输入或解析外部导出的凭据文件。
             </DialogDescription>
           </DialogHeader>
 
-          {renderMethodBody()}
+          <div className="flex-1 overflow-y-auto pr-1">
+            {renderMethodBody()}
+          </div>
 
           <DialogFooter className="pt-2">
             <Button
               variant="secondary"
               className="h-10 rounded-xl bg-secondary px-5 text-secondary-foreground hover:bg-secondary/80"
-              onClick={() => setOpen(false)}
-              disabled={footerDisabled}
+              onClick={() => {
+                setOpen(false);
+                resetState();
+              }}
+              disabled={isSubmitting}
             >
               取消
             </Button>
@@ -552,7 +638,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               <Button
                 className="h-10 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90"
                 onClick={() => void handleImportTokenText()}
-                disabled={footerDisabled}
+                disabled={footerDisabled || splitTokens(tokenInput).length === 0}
               >
                 {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
                 导入 Token
@@ -587,14 +673,14 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
-            <DialogTitle>确认导入 CPA Token</DialogTitle>
+            <DialogTitle>确认导入账号数据</DialogTitle>
             <DialogDescription className="text-sm leading-6">
               {pendingCpaImport
-                ? `确认识别到 ${pendingCpaImport.parsedFileCount} 个账号，是否确认导入？`
+                ? `共识别到 ${pendingCpaImport.parsedAccountCount} 个账号（其中 Codex 账号 ${pendingCpaImport.codexCount} 个，Web 账号 ${pendingCpaImport.webCount} 个），全部凭据（refresh_token、id_token 等）均已就绪，是否确认导入？`
                 : "尚未读取到可导入的账号。"}
               {pendingCpaImport?.errorCount
-                ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功。`
-                : "。"}
+                ? `另有 ${pendingCpaImport.errorCount} 个文件未能读取。`
+                : ""}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="pt-2">
@@ -611,15 +697,15 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               onClick={() =>
                 void submitTokens(
                   pendingCpaImport?.tokens ?? [],
-                  "CPA JSON 导入完成",
-                  "web",
+                  "JSON 账号数据导入完成",
+                  undefined,
                   pendingCpaImport?.records ?? [],
                 )
               }
               disabled={isSubmitting || !pendingCpaImport}
             >
               {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              确认导入
+              确认导入 ({pendingCpaImport?.parsedAccountCount ?? 0})
             </Button>
           </DialogFooter>
         </DialogContent>
