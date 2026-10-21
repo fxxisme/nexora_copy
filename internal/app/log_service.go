@@ -23,8 +23,15 @@ func newLogService(dataDir string) *logService {
 }
 
 func (l *logService) add(typ, summary string, detail map[string]any) {
+	l.addWithID(randID(8), typ, summary, detail)
+}
+
+func (l *logService) addWithID(id, typ, summary string, detail map[string]any) {
+	if id == "" {
+		id = randID(8)
+	}
 	item := map[string]any{
-		"id":      randID(8),
+		"id":      id,
 		"time":    time.Now().Format("2006-01-02 15:04:05"),
 		"type":    typ,
 		"summary": summary,
@@ -32,6 +39,96 @@ func (l *logService) add(typ, summary string, detail map[string]any) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.store != nil {
+		data, err := json.Marshal(item)
+		if err != nil {
+			return
+		}
+		timeValue := strAny(item["time"], "")
+		day := ""
+		if len(timeValue) >= 10 {
+			day = timeValue[:10]
+		}
+		outcome := strAny(detail["status"], "")
+		endpoint := strAny(detail["endpoint"], "")
+		model := strAny(detail["model"], "")
+		search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], "")}, " "))
+		stmt := "INSERT INTO app_logs (id, payload, event_time, event_day, log_type, outcome, endpoint, model, search_text) VALUES (" + l.store.bind(1) + ", " + l.store.bind(2) + ", " + l.store.bind(3) + ", " + l.store.bind(4) + ", " + l.store.bind(5) + ", " + l.store.bind(6) + ", " + l.store.bind(7) + ", " + l.store.bind(8) + ", " + l.store.bind(9) + ")"
+		if _, err := l.store.db.Exec(stmt, item["id"], string(data), timeValue, day, typ, outcome, endpoint, model, search); err != nil {
+			log.Printf("storage append log: %v", err)
+		}
+		return
+	}
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	data, _ := json.Marshal(item)
+	f.Write(data)
+	f.Write([]byte{'\n'})
+}
+
+func (l *logService) updateOrAdd(callID, typ, summary string, detail map[string]any) {
+	if callID == "" {
+		l.add(typ, summary, detail)
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.store != nil {
+		var originalPayload, originalTime string
+		err := l.store.db.QueryRow("SELECT payload, event_time FROM app_logs WHERE id = "+l.store.bind(1), callID).Scan(&originalPayload, &originalTime)
+		if err == nil && originalPayload != "" {
+			var origItem map[string]any
+			if json.Unmarshal([]byte(originalPayload), &origItem) == nil {
+				if origDetail, ok := origItem["detail"].(map[string]any); ok {
+					mergedDetail := make(map[string]any, len(origDetail)+len(detail))
+					for k, v := range origDetail {
+						mergedDetail[k] = v
+					}
+					for k, v := range detail {
+						mergedDetail[k] = v
+					}
+					detail = mergedDetail
+				}
+			}
+			timeValue := originalTime
+			if timeValue == "" {
+				timeValue = time.Now().Format("2006-01-02 15:04:05")
+			}
+			item := map[string]any{
+				"id":      callID,
+				"time":    timeValue,
+				"type":    typ,
+				"summary": summary,
+				"detail":  detail,
+			}
+			data, _ := json.Marshal(item)
+			outcome := strAny(detail["status"], "")
+			endpoint := strAny(detail["endpoint"], "")
+			model := strAny(detail["model"], "")
+			search := strings.ToLower(strings.Join([]string{summary, strAny(detail["request_text"], ""), strAny(detail["error"], "")}, " "))
+
+			stmt := "UPDATE app_logs SET payload=" + l.store.bind(1) + ", outcome=" + l.store.bind(2) + ", endpoint=" + l.store.bind(3) + ", model=" + l.store.bind(4) + ", search_text=" + l.store.bind(5) + " WHERE id=" + l.store.bind(6)
+			res, err := l.store.db.Exec(stmt, string(data), outcome, endpoint, model, search, callID)
+			if err == nil {
+				if n, _ := res.RowsAffected(); n > 0 {
+					return
+				}
+			}
+		}
+	}
+
+	item := map[string]any{
+		"id":      callID,
+		"time":    time.Now().Format("2006-01-02 15:04:05"),
+		"type":    typ,
+		"summary": summary,
+		"detail":  detail,
+	}
 	if l.store != nil {
 		data, err := json.Marshal(item)
 		if err != nil {
@@ -78,7 +175,7 @@ func (s *Server) logCallStart(id *Identity, endpoint, model, action, requestText
 	if strings.TrimSpace(requestText) != "" {
 		detail["request_text"] = truncateText(requestText, 500)
 	}
-	s.logSvc.add("call", action+"开始", detail)
+	s.logSvc.addWithID(callID, "call", action+"进行中", detail)
 	return callID
 }
 
@@ -90,7 +187,7 @@ func (s *Server) logCallSuccess(callID, endpoint, model, action string, extra ma
 	for k, v := range extra {
 		detail[k] = v
 	}
-	s.logSvc.add("call", action+"完成", detail)
+	s.logSvc.updateOrAdd(callID, "call", action+"完成", detail)
 }
 
 func (s *Server) logCallFailure(callID, endpoint, model, action string, err error, extra map[string]any) {
@@ -104,7 +201,7 @@ func (s *Server) logCallFailure(callID, endpoint, model, action string, err erro
 	for k, v := range extra {
 		detail[k] = v
 	}
-	s.logSvc.add("call", action+"失败", detail)
+	s.logSvc.updateOrAdd(callID, "call", action+"失败", detail)
 }
 
 func (s *Server) callDurationMS(callID string) int64 {
