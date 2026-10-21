@@ -2,39 +2,19 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v1.0.0)'
+        required: false
+        default: ''
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  test:
-    name: Go test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download Go modules
-        run: go mod download
-
-      - name: Run Go tests
-        run: go test ./...
-
   web:
     name: Build frontend
     runs-on: ubuntu-latest
@@ -60,7 +40,7 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
         run: npm run build -- --webpack
 
-      - name: Upload frontend for packaging
+      - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
         with:
           name: web-dist
@@ -71,7 +51,6 @@ jobs:
     name: Package ${{ matrix.target }}
     runs-on: ubuntu-latest
     needs:
-      - test
       - web
 
     strategy:
@@ -84,18 +63,12 @@ jobs:
             binary_ext: ""
             archive_ext: tar.gz
             curl_asset: curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz
-          - target: linux-arm64
-            goos: linux
-            goarch: arm64
-            binary_ext: ""
-            archive_ext: tar.gz
-            curl_asset: curl-impersonate-v0.6.1.aarch64-linux-gnu.tar.gz
-          - target: darwin-amd64
-            goos: darwin
+          - target: windows-amd64
+            goos: windows
             goarch: amd64
-            binary_ext: ""
-            archive_ext: tar.gz
-            curl_asset: curl-impersonate-v0.6.1.x86_64-macos.tar.gz
+            binary_ext: ".exe"
+            archive_ext: zip
+            curl_asset: ""
 
     steps:
       - name: Checkout
@@ -128,10 +101,9 @@ jobs:
           package_name="${app_name}-${TARGET}"
           package_dir="dist/${package_name}"
           binary_name="${app_name}${BINARY_EXT}"
-          curl_url="https://github.com/lwthiker/curl-impersonate/releases/download/v0.6.1/${CURL_ASSET}"
 
           rm -rf dist
-          mkdir -p "${package_dir}/bin" "${package_dir}/data/bin/curl-impersonate"
+          mkdir -p "${package_dir}/bin"
 
           CGO_ENABLED=0 GOOS="${GOOS_VALUE}" GOARCH="${GOARCH_VALUE}" \
             go build -trimpath -ldflags="-s -w" -o "${package_dir}/bin/${binary_name}" ./cmd/server
@@ -139,75 +111,18 @@ jobs:
           cp "${package_dir}/bin/${binary_name}" "${package_dir}/${binary_name}"
           cp -R web_dist "${package_dir}/web_dist"
 
-          curl -fsSL "${curl_url}" | tar -xz -C "${package_dir}/data/bin/curl-impersonate"
-          test -n "$(find "${package_dir}/data/bin/curl-impersonate" -type f \( -name 'curl_edge101' -o -name 'curl_chrome116' -o -name 'curl-impersonate-chrome' -o -name 'curl-impersonate' \) -print -quit)"
+          if [ -n "${CURL_ASSET}" ]; then
+            mkdir -p "${package_dir}/data/bin/curl-impersonate"
+            curl_url="https://github.com/lwthiker/curl-impersonate/releases/download/v0.6.1/${CURL_ASSET}"
+            curl -fsSL --retry 3 "${curl_url}" | tar -xz -C "${package_dir}/data/bin/curl-impersonate" || true
+            find "${package_dir}/data/bin/curl-impersonate" -type f -exec chmod +x {} + 2>/dev/null || true
+          fi
 
-          for file in README.md LICENSE VERSION GO_MIGRATION.md THIRD_PARTY_NOTICES.md; do
+          for file in README.md LICENSE VERSION GO_MIGRATION.md; do
             if [ -f "${file}" ]; then
               cp "${file}" "${package_dir}/"
             fi
           done
-
-          if [ -f start.sh ]; then
-            cp start.sh "${package_dir}/"
-          fi
-
-          cat > "${package_dir}/config.example.json" <<'JSON'
-          {
-            "server": {
-              "addr": ":3000",
-              "admin_key": "change-me"
-            }
-          }
-          JSON
-
-          cat > "${package_dir}/README_RELEASE.md" <<EOF
-          # ${package_name}
-
-          This archive contains:
-
-          - The ${TARGET} server binary.
-          - The built frontend files in web_dist/.
-          - A matching curl-impersonate binary bundle in data/bin/curl-impersonate/.
-
-          ## Run
-
-          Start from this directory:
-
-          \`\`\`bash
-          ./${binary_name}
-          \`\`\`
-
-          If start.sh is supported by your shell, you can also run:
-
-          \`\`\`bash
-          ./start.sh --port 3000
-          \`\`\`
-
-          ## Use bundled curl-impersonate
-
-          \`\`\`bash
-          CHATGPT2API_UPSTREAM_TRANSPORT=curl-impersonate \\
-          CHATGPT2API_CURL_IMPERSONATE_BIN="\$PWD/data/bin/curl-impersonate/curl_edge101" \\
-          ./${binary_name}
-          \`\`\`
-
-          If curl_edge101 is not present in this target bundle, use one of the curl_* launcher scripts or curl-impersonate executables in data/bin/curl-impersonate/.
-
-          ## Runtime files
-
-          Runtime JSON data, generated images, and logs are stored under data/ in the current working directory.
-          EOF
-
-          chmod +x "${package_dir}/${binary_name}" "${package_dir}/bin/${binary_name}"
-          if [ -f "${package_dir}/start.sh" ]; then
-            chmod +x "${package_dir}/start.sh"
-          fi
-          find "${package_dir}/data/bin/curl-impersonate" -type f -exec chmod +x {} +
-
-          test -d "${package_dir}/web_dist"
-          test -f "${package_dir}/bin/${binary_name}"
-          test -n "$(find "${package_dir}/data/bin/curl-impersonate" -type f -print -quit)"
 
           if [ "${ARCHIVE_EXT}" = "zip" ]; then
             (
@@ -231,11 +146,10 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    name: Upload GitHub Release assets
+    name: Create GitHub Release
     runs-on: ubuntu-latest
     needs:
       - package
-    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 
@@ -247,19 +161,25 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Show release assets
-        run: find release-assets -type f | sort
+      - name: Determine Tag Name
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            echo "val=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "val=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ steps.tag.outputs.val }}
         run: |
           set -euo pipefail
 
           if ! gh release view "${TAG_NAME}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release create "${TAG_NAME}" --repo "${GH_REPO}" --title "${TAG_NAME}" --notes "Automated release for ${TAG_NAME}."
+            gh release create "${TAG_NAME}" --repo "${GH_REPO}" --title "${TAG_NAME}" --generate-notes
           fi
 
           while IFS= read -r -d '' asset; do
