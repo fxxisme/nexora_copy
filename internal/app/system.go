@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -104,7 +105,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if v, ok := body["image_storage_public_base_url"]; ok {
 			s.cfg.ImageStoragePublicBaseURL = strings.TrimRight(strings.TrimSpace(strAny(v, "")), "/")
 		}
-		_ = s.saveConfig()
+		if err := s.saveConfig(); err != nil {
+			log.Printf("[ERROR] save config: %v", err)
+		}
 		writeJSON(w, 200, map[string]any{"config": s.configMap(false)})
 	default:
 		writeErr(w, 405, "method not allowed")
@@ -190,7 +193,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Extra = map[string]any{}
 		}
 		s.cfg.Extra["proxy"] = proxy
-		_ = s.saveConfig()
+		if err := s.saveConfig(); err != nil {
+			log.Printf("[ERROR] save config: %v", err)
+		}
 		writeJSON(w, 200, map[string]any{"proxy": map[string]any{"url": proxy, "enabled": proxy != ""}})
 		return
 	}
@@ -264,7 +269,9 @@ func (s *Server) handleProxyDefaults(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Extra = map[string]any{}
 		}
 		s.cfg.Extra["proxy"] = s.cfg.Proxy
-		_ = s.saveConfig()
+		if err := s.saveConfig(); err != nil {
+			log.Printf("[ERROR] save config: %v", err)
+		}
 	}
 	defaults, _ := s.store.LoadProxyDefaults()
 	writeJSON(w, http.StatusOK, map[string]any{"default_reference": defaults.Default, "fallback_reference": defaults.Fallback})

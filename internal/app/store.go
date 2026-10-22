@@ -353,9 +353,14 @@ func writeJSONFile(path string, value any) error {
 	b = append(b, '\n')
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0644); err != nil {
-		return err
+		return os.WriteFile(path, b, 0644)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		// 单文件挂载 (bind mount) 或跨设备时 rename 会报 EBUSY/EXDEV，回退为直接覆盖写入
+		_ = os.Remove(tmp)
+		return os.WriteFile(path, b, 0644)
+	}
+	return nil
 }
 
 func (s *Store) LoadAccounts() []Account {
