@@ -43,9 +43,21 @@ type Server struct {
 	oauthLogin          *oauthLoginManager
 }
 
+func resolveConfigPath(root string) string {
+	dataPath := filepath.Join(root, "data", "config.json")
+	if fi, err := os.Stat(dataPath); err == nil && !fi.IsDir() {
+		return dataPath
+	}
+	rootPath := filepath.Join(root, "config.json")
+	if fi, err := os.Stat(rootPath); err == nil && !fi.IsDir() {
+		return rootPath
+	}
+	return dataPath
+}
+
 func NewServer(root string) (*Server, error) {
 	root, _ = filepath.Abs(root)
-	cfg, err := loadConfig(filepath.Join(root, "config.json"))
+	cfg, err := loadConfig(resolveConfigPath(root))
 	if err != nil {
 		return nil, err
 	}
@@ -130,13 +142,53 @@ func loadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("decode config %s: %w", path, err)
 		}
 	}
+	if imgStorage, ok := raw["image_storage"].(map[string]any); ok {
+		if mode, ok := imgStorage["mode"].(string); ok && mode != "" && cfg.ImageStorageMode == "" {
+			cfg.ImageStorageMode = strings.TrimSpace(mode)
+		}
+		if enabled, ok := imgStorage["enabled"].(bool); ok && !enabled && cfg.ImageStorageMode == "" {
+			cfg.ImageStorageMode = "local"
+		}
+		if u, ok := imgStorage["webdav_url"].(string); ok && u != "" && cfg.WebDAVURL == "" {
+			cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(u), "/")
+		}
+		if u, ok := imgStorage["webdav_username"].(string); ok && u != "" && cfg.WebDAVUsername == "" {
+			cfg.WebDAVUsername = strings.TrimSpace(u)
+		}
+		if p, ok := imgStorage["webdav_password"].(string); ok && p != "" && cfg.WebDAVPassword == "" {
+			cfg.WebDAVPassword = strings.TrimSpace(p)
+		}
+		if r, ok := imgStorage["webdav_root_path"].(string); ok && r != "" && cfg.WebDAVRootPath == "" {
+			cfg.WebDAVRootPath = strings.Trim(strings.TrimSpace(r), "/")
+		}
+		if pub, ok := imgStorage["public_base_url"].(string); ok && pub != "" && cfg.ImageStoragePublicBaseURL == "" {
+			cfg.ImageStoragePublicBaseURL = strings.TrimRight(strings.TrimSpace(pub), "/")
+		}
+	}
+	if cfg.ImageStorageMode == "" {
+		cfg.ImageStorageMode = "local"
+	}
+	if cfg.WebDAVRootPath == "" {
+		cfg.WebDAVRootPath = "nexora/images"
+	}
 	cfg.Extra = raw
 	return cfg, nil
 }
 
 func (s *Server) saveConfig() error {
 	m := s.configMap(true)
-	return writeJSONFile(filepath.Join(s.root, "config.json"), m)
+	dataConfig := filepath.Join(s.dataDir, "config.json")
+	errData := writeJSONFile(dataConfig, m)
+
+	rootConfig := filepath.Join(s.root, "config.json")
+	if fi, err := os.Stat(rootConfig); err == nil && !fi.IsDir() {
+		_ = writeJSONFile(rootConfig, m)
+	}
+
+	if errData != nil {
+		return writeJSONFile(rootConfig, m)
+	}
+	return nil
 }
 
 func (s *Server) configMap(includeAuth bool) map[string]any {
@@ -172,6 +224,15 @@ func (s *Server) configMap(includeAuth bool) map[string]any {
 	m["webdav_password"] = s.cfg.WebDAVPassword
 	m["webdav_root_path"] = s.cfg.WebDAVRootPath
 	m["image_storage_public_base_url"] = s.cfg.ImageStoragePublicBaseURL
+	m["image_storage"] = map[string]any{
+		"enabled":          s.cfg.ImageStorageMode == "webdav" || s.cfg.ImageStorageMode == "both",
+		"mode":             s.cfg.ImageStorageMode,
+		"webdav_url":       s.cfg.WebDAVURL,
+		"webdav_username":  s.cfg.WebDAVUsername,
+		"webdav_password":  s.cfg.WebDAVPassword,
+		"webdav_root_path": s.cfg.WebDAVRootPath,
+		"public_base_url":  s.cfg.ImageStoragePublicBaseURL,
+	}
 	if _, ok := m["backup"]; !ok {
 		m["backup"] = disabledBackupSettings()
 	}

@@ -494,6 +494,22 @@ export function ImageSection() {
           </button>
         </div>
 
+        {/* 图片访问地址 / 公共前缀（通用配置，本地与 WebDAV 均生效） */}
+        <div className="rounded-xl border border-stone-200 bg-white p-4 dark:border-border dark:bg-card">
+          <div className="space-y-1.5">
+            <label className={LABEL_CLASS}>图片访问地址 / 公开前缀 (当前域名)</label>
+            <Input
+              value={String(config?.image_storage_public_base_url || "")}
+              onChange={(e) => setImageStoragePublicBaseUrl(e.target.value)}
+              placeholder="https://api.example.com 或 https://images.example.com"
+              className={INPUT_CLASS}
+            />
+            <p className={HELP_CLASS}>
+              通用配置（本地存储与 WebDAV 均生效）：可填写当前服务的公网域名（如 https://api.yourdomain.com）或独立图片 CDN 前缀。生图 API 与画廊将据此生成图片访问链接；留空时默认使用本应用当前请求域名（/images/...）。
+            </p>
+          </div>
+        </div>
+
         {(storageMode === "webdav" || storageMode === "both") && (
           <div className="mt-4 space-y-4 rounded-xl border border-stone-200 bg-white p-4 dark:border-border dark:bg-card">
             <div className="grid gap-4 md:grid-cols-2">
@@ -529,7 +545,7 @@ export function ImageSection() {
                 />
               </div>
 
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 md:col-span-2">
                 <label className={LABEL_CLASS}>WebDAV 相对存储目录</label>
                 <Input
                   value={String(config?.webdav_root_path || "")}
@@ -538,17 +554,6 @@ export function ImageSection() {
                   className={INPUT_CLASS}
                 />
                 <p className={HELP_CLASS}>将在该目录下按 年/月/日 自动建立结构</p>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className={LABEL_CLASS}>外部公开访问前缀 (可选)</label>
-                <Input
-                  value={String(config?.image_storage_public_base_url || "")}
-                  onChange={(e) => setImageStoragePublicBaseUrl(e.target.value)}
-                  placeholder="https://images.example.com"
-                  className={INPUT_CLASS}
-                />
-                <p className={HELP_CLASS}>如配置了 CDN 反代或公开 WebDAV 挂载域名，可在此填入</p>
               </div>
             </div>
 

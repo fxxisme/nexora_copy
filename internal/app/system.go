@@ -87,6 +87,29 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if v, ok := body["auto_remove_rate_limited_accounts"]; ok {
 			s.cfg.AutoRemoveRateLimitedAccounts = boolAny(v, false)
 		}
+		if imgStorage, ok := body["image_storage"].(map[string]any); ok {
+			if v, ok := imgStorage["mode"]; ok {
+				s.cfg.ImageStorageMode = strings.TrimSpace(strAny(v, "local"))
+			}
+			if v, ok := imgStorage["enabled"]; ok && !boolAny(v, false) {
+				s.cfg.ImageStorageMode = "local"
+			}
+			if v, ok := imgStorage["webdav_url"]; ok {
+				s.cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(strAny(v, "")), "/")
+			}
+			if v, ok := imgStorage["webdav_username"]; ok {
+				s.cfg.WebDAVUsername = strings.TrimSpace(strAny(v, ""))
+			}
+			if v, ok := imgStorage["webdav_password"]; ok {
+				s.cfg.WebDAVPassword = strings.TrimSpace(strAny(v, ""))
+			}
+			if v, ok := imgStorage["webdav_root_path"]; ok {
+				s.cfg.WebDAVRootPath = strings.Trim(strings.TrimSpace(strAny(v, "nexora/images")), "/")
+			}
+			if v, ok := imgStorage["public_base_url"]; ok {
+				s.cfg.ImageStoragePublicBaseURL = strings.TrimRight(strings.TrimSpace(strAny(v, "")), "/")
+			}
+		}
 		if v, ok := body["image_storage_mode"]; ok {
 			s.cfg.ImageStorageMode = strings.TrimSpace(strAny(v, "local"))
 		}
