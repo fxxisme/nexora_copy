@@ -41,6 +41,9 @@ type Server struct {
 	logSvc              *logService
 	register            *registerService
 	oauthLogin          *oauthLoginManager
+	webdavMu            sync.RWMutex
+	cachedDAV           *WebDAVClient
+	davCacheKey         string
 }
 
 func resolveConfigPath(root string) string {

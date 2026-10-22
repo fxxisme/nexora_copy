@@ -21,7 +21,23 @@ func (s *Server) webdavClient() *WebDAVClient {
 	if strings.TrimSpace(s.cfg.WebDAVURL) == "" {
 		return nil
 	}
-	return NewWebDAVClient(s.cfg.WebDAVURL, s.cfg.WebDAVUsername, s.cfg.WebDAVPassword, s.cfg.WebDAVRootPath)
+	key := fmt.Sprintf("%s|%s|%s|%s", s.cfg.WebDAVURL, s.cfg.WebDAVUsername, s.cfg.WebDAVPassword, s.cfg.WebDAVRootPath)
+	s.webdavMu.RLock()
+	if s.cachedDAV != nil && s.davCacheKey == key {
+		c := s.cachedDAV
+		s.webdavMu.RUnlock()
+		return c
+	}
+	s.webdavMu.RUnlock()
+
+	s.webdavMu.Lock()
+	defer s.webdavMu.Unlock()
+	if s.cachedDAV != nil && s.davCacheKey == key {
+		return s.cachedDAV
+	}
+	s.cachedDAV = NewWebDAVClient(s.cfg.WebDAVURL, s.cfg.WebDAVUsername, s.cfg.WebDAVPassword, s.cfg.WebDAVRootPath)
+	s.davCacheKey = key
+	return s.cachedDAV
 }
 
 func (s *Server) saveImage(r *http.Request, data []byte) (string, string, error) {
@@ -44,44 +60,19 @@ func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, stri
 		mode = "local"
 	}
 
-	// 1. 本地存储
-	storedLocal := false
-	if mode == "local" || mode == "both" {
-		path := filepath.Join(s.imagesDir, relDir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return "", "", err
-		}
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return "", "", err
-		}
-		storedLocal = true
+	// 1. 本地快速持久化（无论何种模式均优先秒级写入本地，保证客户端即刻响应且绝不因云端抖动丢图）
+	localPath := filepath.Join(s.imagesDir, relDir, name)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(localPath, data, 0644); err != nil {
+		return "", "", err
 	}
 
-	// 2. WebDAV 远端存储
-	storedWebDAV := false
-	if mode == "webdav" || mode == "both" {
-		if err := client.Put(context.Background(), rel, data, "image/png"); err != nil {
-			if mode == "webdav" && !storedLocal {
-				return "", "", fmt.Errorf("WebDAV 上传失败: %w", err)
-			}
-			if s.logSvc != nil {
-				s.logSvc.add("system", "WebDAV图片备份失败", map[string]any{"rel": rel, "error": err.Error()})
-			}
-		} else {
-			storedWebDAV = true
-		}
-	}
-
-	// 3. 生成本地缩略图（几十KB，极速加载画廊且不占存储空间）
+	// 2. 生成本地极速预览缩略图（几十KB）
 	s.generateThumbnailFromData(rel, data)
 
-	// 4. 记录图片元数据
-	actualStorage := "local"
-	if storedLocal && storedWebDAV {
-		actualStorage = "both"
-	} else if storedWebDAV {
-		actualStorage = "webdav"
-	}
+	// 3. 先以 local 状态落库图片元数据
 	_ = s.store.UpdateImageMeta(func(m map[string]ImageMeta) map[string]ImageMeta {
 		if m == nil {
 			m = map[string]ImageMeta{}
@@ -92,10 +83,39 @@ func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, stri
 			Date:      time.Now().Format("2006-01-02"),
 			Size:      int64(len(data)),
 			CreatedAt: time.Now().Format(time.RFC3339),
-			Storage:   actualStorage,
+			Storage:   "local",
 		}
 		return m
 	})
+
+	// 4. 若开启了 WebDAV 或双写，在后台启动异步协程转存（彻底解除生图主链路对 WebDAV/云盘的网络阻塞）
+	if (mode == "webdav" || mode == "both") && client != nil {
+		go func(targetRel, targetLocalPath string, payload []byte, targetMode string) {
+			uploadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			if err := client.Put(uploadCtx, targetRel, payload, "image/png"); err != nil {
+				if s.logSvc != nil {
+					s.logSvc.add("system", "WebDAV图片异步备份失败", map[string]any{"rel": targetRel, "error": err.Error()})
+				}
+				return
+			}
+			actualStorage := "both"
+			if targetMode == "webdav" {
+				actualStorage = "webdav"
+				// 纯 WebDAV 模式下，远端上传成功后删除本地大图，达成节省本地磁盘的目的
+				_ = os.Remove(targetLocalPath)
+			}
+			_ = s.store.UpdateImageMeta(func(m map[string]ImageMeta) map[string]ImageMeta {
+				if m != nil {
+					if meta, exists := m[targetRel]; exists {
+						meta.Storage = actualStorage
+						m[targetRel] = meta
+					}
+				}
+				return m
+			})
+		}(rel, localPath, data, mode)
+	}
 
 	imageURL := baseURL + "/images/" + rel
 	if strings.TrimSpace(s.cfg.ImageStoragePublicBaseURL) != "" {

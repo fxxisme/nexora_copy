@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"bytes"
 	"context"
 	"errors"
@@ -19,6 +20,7 @@ type WebDAVClient struct {
 	Password string
 	RootPath string
 	client   *http.Client
+	dirCache sync.Map
 }
 
 func NewWebDAVClient(serverURL, username, password, rootPath string) *WebDAVClient {
@@ -86,6 +88,9 @@ func (c *WebDAVClient) EnsureDirs(ctx context.Context, rel string) error {
 	curr := c.URL
 	for _, seg := range parts {
 		curr += "/" + url.PathEscape(seg)
+		if _, ok := c.dirCache.Load(curr); ok {
+			continue
+		}
 		req, err := http.NewRequestWithContext(ctx, "MKCOL", curr, nil)
 		if err != nil {
 			return err
@@ -96,8 +101,10 @@ func (c *WebDAVClient) EnsureDirs(ctx context.Context, rel string) error {
 			return err
 		}
 		_ = resp.Body.Close()
-		// 201 Created; 405 Method Not Allowed (通常表示目录已存在)
-		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode < 200 && resp.StatusCode >= 400 {
+		// 201 Created; 405 Method Not Allowed (通常表示目录已存在); 200~299 成功
+		if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusMethodNotAllowed || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+			c.dirCache.Store(curr, struct{}{})
+		} else if resp.StatusCode >= 400 {
 			return fmt.Errorf("WebDAV MKCOL %s failed: status %d", curr, resp.StatusCode)
 		}
 	}
