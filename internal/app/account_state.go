@@ -132,6 +132,9 @@ func rateLimitRestoreDelay(err error) time.Duration {
 }
 
 func (s *Server) markAccountSuccess(token string, image bool) {
+	if s.accountPool != nil {
+		token = s.accountPool.resolveToken(token)
+	}
 	if token == "" {
 		return
 	}
@@ -159,7 +162,10 @@ func (s *Server) markAccountSuccess(token string, image bool) {
 }
 
 func (s *Server) markAccountFailure(token string, err error, image bool, model string) {
-	if token == "" || isProxyConnectionFailure(err) || isImageDeliveryFailure(err) || isImageTextReplyFailure(err) || errors.Is(err, errNoImageGenerated) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if s.accountPool != nil {
+		token = s.accountPool.resolveToken(token)
+	}
+	if token == "" || isProxyConnectionFailure(err) || isImageDeliveryFailure(err) || isImageTextReplyFailure(err) || isUpstreamBlockErrorText(err) || isTurnstileRequirementErrorText(err) || isTemporaryUpstreamErrorText(err) || errors.Is(err, errNoImageGenerated) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
 	now := nowISO()

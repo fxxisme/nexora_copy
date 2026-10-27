@@ -1,6 +1,10 @@
 package app
 
-import "context"
+import (
+	"context"
+	"strings"
+	"time"
+)
 
 type upstreamStreamAttempt struct {
 	Client *UpstreamClient
@@ -35,8 +39,21 @@ func (s *Server) streamTextWithRetryMode(ctx context.Context, messages []map[str
 			token := account.AccessToken
 			traceLogf(ctx, "│  ├─ selected text account %s", accountLabel(account))
 			excluded[token] = true
+			if account.RefreshToken != nil && strings.TrimSpace(*account.RefreshToken) != "" && accessTokenNeedsRefresh(account.AccessToken) {
+				ctxRefresh, cancel := context.WithTimeout(ctx, 45*time.Second)
+				refreshed, refErr := s.refreshOAuthAccount(ctxRefresh, account.AccessToken)
+				cancel()
+				if refErr == nil && refreshed.AccessToken != "" {
+					account = refreshed
+					token = refreshed.AccessToken
+					excluded[token] = true
+				} else {
+					traceLogf(ctx, "│  ├─ preemptive refresh failed: %v", refErr)
+				}
+			}
 			client, err := s.newUpstreamClientForAccount(account)
 			if err != nil {
+				s.accountPool.releaseToken(token)
 				errs <- err
 				return
 			}

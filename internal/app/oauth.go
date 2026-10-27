@@ -37,7 +37,31 @@ func terminalOAuthRefreshError(err error) bool {
 }
 
 func (s *Server) refreshOAuthAccount(ctx context.Context, oldToken string) (Account, error) {
-	return s.refreshOAuthAccountAt(ctx, oldToken, codexOAuthTokenURL)
+	if s.accountPool == nil {
+		return s.refreshOAuthAccountAt(ctx, oldToken, codexOAuthTokenURL)
+	}
+	resolved := s.accountPool.resolveToken(oldToken)
+	flight, isOwner := s.accountPool.acquireRefreshFlight(resolved)
+	if !isOwner {
+		select {
+		case <-flight.done:
+			return flight.account, flight.err
+		case <-ctx.Done():
+			return Account{}, ctx.Err()
+		}
+	}
+	defer s.accountPool.releaseRefreshFlight(resolved, flight)
+
+	account, err := s.refreshOAuthAccountAt(ctx, resolved, codexOAuthTokenURL)
+	flight.account = account
+	flight.err = err
+	if err == nil && account.AccessToken != "" && account.AccessToken != resolved {
+		s.accountPool.recordAlias(resolved, account.AccessToken)
+		if oldToken != resolved {
+			s.accountPool.recordAlias(oldToken, account.AccessToken)
+		}
+	}
+	return account, err
 }
 
 func accessTokenNeedsRefresh(token string) bool {
@@ -56,6 +80,9 @@ func accessTokenNeedsRefresh(token string) bool {
 }
 
 func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL string) (Account, error) {
+	if s.accountPool != nil {
+		oldToken = s.accountPool.resolveToken(oldToken)
+	}
 	accounts := s.store.LoadAccounts()
 	idx := -1
 	var account Account
@@ -192,6 +219,9 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 	}
 	if !updated {
 		return Account{}, fmt.Errorf("account was removed during token refresh")
+	}
+	if s.accountPool != nil && newToken != "" && newToken != oldToken {
+		s.accountPool.recordAlias(oldToken, newToken)
 	}
 	return account, nil
 }

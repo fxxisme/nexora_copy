@@ -2385,6 +2385,7 @@ func (s *Server) upstreamClient() (*UpstreamClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer s.accountPool.releaseToken(account.AccessToken)
 	return s.newUpstreamClientForAccount(account)
 }
 func (s *Server) upstreamClientForImage(model, resolution string) (*UpstreamClient, error) {
@@ -2401,7 +2402,7 @@ func (s *Server) upstreamClientForImageExcluding(model, resolution string, exclu
 }
 
 func (s *Server) upstreamClientForImageAccount(model, resolution string, account Account) (*UpstreamClient, Account, error) {
-	if isCodexImageRequest(model, resolution) {
+	if isCodexImageRequest(model, resolution) || (account.RefreshToken != nil && strings.TrimSpace(*account.RefreshToken) != "" && accessTokenNeedsRefresh(account.AccessToken)) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		if refreshed, err := s.refreshOAuthAccount(ctx, account.AccessToken); err == nil && refreshed.AccessToken != "" {

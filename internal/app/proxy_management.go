@@ -272,6 +272,12 @@ func recentlyUnhealthyProxyNode(node ProxyNode, now time.Time) bool {
 }
 
 func (s *Server) newUpstreamClientForAccount(account Account) (*UpstreamClient, error) {
+	if s.accountPool != nil && account.AccessToken != "" {
+		resolved := s.accountPool.resolveToken(account.AccessToken)
+		if resolved != "" && resolved != account.AccessToken {
+			account.AccessToken = resolved
+		}
+	}
 	route, err := s.selectedProxyRouteForAccount(account)
 	if err != nil {
 		return nil, err
