@@ -1,6 +1,9 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,3 +97,34 @@ func TestAccountPoolRefreshSingleFlight(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestSettingsSaveImageAccountConcurrency(t *testing.T) {
+	tempDir := t.TempDir()
+	s := &Server{
+		root:    tempDir,
+		dataDir: tempDir,
+		cfg: Config{
+			AuthKey:                 "admin-key",
+			ImageAccountConcurrency: 3,
+			Extra:                   map[string]any{},
+		},
+	}
+	s.accountPool = newAccountPool(&s.cfg)
+
+	body := `{"image_account_concurrency": 2, "cleanup_protect_gallery": false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer admin-key")
+	rec := httptest.NewRecorder()
+	s.handleSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if s.cfg.ImageAccountConcurrency != 2 {
+		t.Fatalf("expected ImageAccountConcurrency = 2, got %d", s.cfg.ImageAccountConcurrency)
+	}
+	if s.accountPool.cfg.ImageAccountConcurrency != 2 {
+		t.Fatalf("expected accountPool.cfg.ImageAccountConcurrency = 2, got %d", s.accountPool.cfg.ImageAccountConcurrency)
+	}
+}
+

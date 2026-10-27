@@ -81,6 +81,19 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if v, ok := body["image_poll_initial_wait_secs"]; ok {
 			s.cfg.ImagePollInitialWaitSecs = intAny(v, s.cfg.ImagePollInitialWaitSecs)
 		}
+		if v, ok := body["image_account_concurrency"]; ok {
+			val := intAny(v, s.cfg.ImageAccountConcurrency)
+			if val <= 0 {
+				val = 3
+			}
+			s.cfg.ImageAccountConcurrency = val
+		}
+		if v, ok := body["cleanup_protect_gallery"]; ok {
+			s.cfg.CleanupProtectGallery = boolAny(v, s.cfg.CleanupProtectGallery)
+		}
+		if v, ok := body["cleanup_protect_user_images"]; ok {
+			s.cfg.CleanupProtectUserImages = boolAny(v, s.cfg.CleanupProtectUserImages)
+		}
 		if v, ok := body["auto_remove_invalid_accounts"]; ok {
 			s.cfg.AutoRemoveInvalidAccounts = boolAny(v, false)
 		}
