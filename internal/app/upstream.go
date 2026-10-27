@@ -1156,6 +1156,9 @@ func (c *UpstreamClient) GetUserInfo(ctx context.Context) (Account, error) {
 		}
 		if accountEntry != nil {
 			if acct, ok := accountEntry["account"].(map[string]any); ok {
+				if boolAny(acct["is_deactivated"], false) {
+					return Account{}, errors.New("account deactivated")
+				}
 				if plan := strAny(acct["plan_type"], ""); plan != "" {
 					planType = normalizeAccountType(plan)
 				}

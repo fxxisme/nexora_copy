@@ -523,6 +523,10 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 			a = refreshed
 		} else {
 			preflightErr = err
+			if terminalOAuthRefreshError(err) || isInvalidTokenErrorText(err) {
+				s.markAccountRefreshAuthFailure(a, err)
+				return err
+			}
 		}
 	}
 	client, err := s.newUpstreamClientForAccount(a)
@@ -536,15 +540,17 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 		}
 		if preflightErr == nil {
 			refreshed, refreshErr := s.refreshOAuthAccount(ctx, a.AccessToken)
-			if refreshErr != nil && !terminalOAuthRefreshError(refreshErr) {
+			if refreshErr != nil {
+				if terminalOAuthRefreshError(refreshErr) || isInvalidTokenErrorText(refreshErr) {
+					s.markAccountRefreshAuthFailure(a, refreshErr)
+					return refreshErr
+				}
 				return fmt.Errorf("oauth refresh after account authentication failure: %w", refreshErr)
 			}
-			if refreshErr == nil {
-				a = refreshed
-				client, err = s.newUpstreamClientForAccount(a)
-				if err == nil {
-					info, err = client.GetUserInfo(ctx)
-				}
+			a = refreshed
+			client, err = s.newUpstreamClientForAccount(a)
+			if err == nil {
+				info, err = client.GetUserInfo(ctx)
 			}
 		}
 	}
@@ -553,6 +559,8 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 	}
 	if isInvalidTokenErrorText(err) {
 		s.markAccountRefreshAuthFailure(a, err)
+	} else if isRateLimitErrorText(err) {
+		s.markAccountRefreshRateLimit(a, err)
 	}
 	return err
 }
@@ -562,6 +570,24 @@ func (s *Server) markAccountRefreshAuthFailure(observed Account, err error) {
 		for i := range current {
 			if current[i].AccessToken == observed.AccessToken && ptrString(current[i].RefreshToken) == ptrString(observed.RefreshToken) {
 				applyAccountFailureState(&current[i], err, nowISO())
+				if s.cfg.AutoRemoveInvalidAccounts {
+					current = append(current[:i], current[i+1:]...)
+				}
+				break
+			}
+		}
+		return current
+	})
+}
+
+func (s *Server) markAccountRefreshRateLimit(observed Account, err error) {
+	_ = s.store.UpdateAccounts(func(current []Account) []Account {
+		for i := range current {
+			if current[i].AccessToken == observed.AccessToken {
+				applyAccountFailureState(&current[i], err, nowISO())
+				if s.cfg.AutoRemoveRateLimitedAccounts {
+					current = append(current[:i], current[i+1:]...)
+				}
 				break
 			}
 		}

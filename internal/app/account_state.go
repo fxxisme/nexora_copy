@@ -33,13 +33,26 @@ func isInvalidTokenErrorText(err error) bool {
 	if err == nil {
 		return false
 	}
+	if terminalOAuthRefreshError(err) {
+		return true
+	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "status=401") ||
 		strings.Contains(text, "http 401") ||
 		strings.Contains(text, "token_invalidated") ||
 		strings.Contains(text, "token_revoked") ||
 		strings.Contains(text, "invalidated oauth token") ||
-		strings.Contains(text, "authentication token has been invalidated")
+		strings.Contains(text, "authentication token has been invalidated") ||
+		strings.Contains(text, "account deactivated") ||
+		strings.Contains(text, "account_deactivated") ||
+		strings.Contains(text, "account suspended") ||
+		strings.Contains(text, "your account has been suspended") ||
+		strings.Contains(text, "invalid_grant") ||
+		strings.Contains(text, "invalid_refresh_token") ||
+		strings.Contains(text, "refresh_token_invalidated") ||
+		strings.Contains(text, "session has ended") ||
+		strings.Contains(text, "refresh_token not found") ||
+		strings.Contains(text, "oauth refresh response missing access_token")
 }
 
 func isAutoConversationModelNotFound(err error, model string) bool {
@@ -184,6 +197,12 @@ func (s *Server) markAccountFailure(token string, err error, image bool, model s
 func applyAccountFailureState(account *Account, err error, now string) {
 	account.Fail++
 	account.LastUsedAt = &now
+	if account.Status == "禁用" {
+		if isInvalidTokenErrorText(err) {
+			account.Quota = 0
+		}
+		return
+	}
 	if isRateLimitErrorText(err) {
 		account.Status = "限流"
 		reset := time.Now().UTC().Add(rateLimitRestoreDelay(err)).Format(time.RFC3339)

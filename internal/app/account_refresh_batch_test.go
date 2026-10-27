@@ -293,3 +293,33 @@ func TestChineseImageQuotaFailureSetsRestoreTime(t *testing.T) {
 		t.Fatalf("quota error classification=%t delay=%s", isRateLimitErrorText(err), rateLimitRestoreDelay(err))
 	}
 }
+
+func TestRefreshAccountInfoMarksAuthFailureAsAbnormal(t *testing.T) {
+	store := NewStore(t.TempDir())
+	account := Account{AccessToken: "token-401", Status: "正常", Quota: 5}
+	if err := store.SaveAccounts([]Account{account}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: store}
+	err := errors.New("GET /backend-api/me failed: status=401 body=unauthorized")
+	s.markAccountRefreshAuthFailure(account, err)
+	updated := store.LoadAccounts()[0]
+	if updated.Status != "异常" || updated.Quota != 0 || updated.Fail != 1 {
+		t.Fatalf("account status = %q quota = %d fail = %d, want 异常 0 1", updated.Status, updated.Quota, updated.Fail)
+	}
+}
+
+func TestRefreshAccountInfoMarksRateLimit(t *testing.T) {
+	store := NewStore(t.TempDir())
+	account := Account{AccessToken: "token-429", Status: "正常", Quota: 5}
+	if err := store.SaveAccounts([]Account{account}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: store}
+	err := errors.New("GET /backend-api/me failed: status=429 body=too many requests")
+	s.markAccountRefreshRateLimit(account, err)
+	updated := store.LoadAccounts()[0]
+	if updated.Status != "限流" || updated.RestoreAt == nil {
+		t.Fatalf("account status = %q restoreAt = %v, want 限流", updated.Status, updated.RestoreAt)
+	}
+}
