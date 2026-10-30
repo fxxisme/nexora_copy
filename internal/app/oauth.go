@@ -182,6 +182,10 @@ func (s *Server) refreshOAuthAccountAt(ctx context.Context, oldToken, tokenURL s
 		if expiresIn > 0 {
 			account.ExpiresAt = time.Now().Unix() + int64(expiresIn)
 		}
+		if account.Status == "异常" {
+			account.Status = "正常"
+			account.Fail = 0
+		}
 		if account.AccountID == nil || *account.AccountID == "" {
 			if accountID := chatGPTAccountID(newToken); accountID != "" {
 				account.AccountID = &accountID

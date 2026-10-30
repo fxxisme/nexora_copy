@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,23 @@ func (s *Server) generateImageWithPool(ctx context.Context, prompt, model, size,
 			} else if fallback != nil {
 				traceLogf(ctx, "│  ├─ retry image preflight with fallback outlet")
 				items, _, err = s.generateImageWithReservedEgress(ctx, fallback, actualAccount, prompt, model, size, resolution, refs)
+			}
+		}
+		if isInvalidTokenErrorText(err) && actualAccount.RefreshToken != nil && strings.TrimSpace(*actualAccount.RefreshToken) != "" {
+			traceLogf(ctx, "│  ├─ image 401 received, attempting oauth refresh with rt")
+			ctxRefresh, cancel := context.WithTimeout(ctx, 45*time.Second)
+			refreshed, refErr := s.refreshOAuthAccount(ctxRefresh, actualAccount.AccessToken)
+			cancel()
+			if refErr == nil && refreshed.AccessToken != "" {
+				actualAccount = refreshed
+				token = refreshed.AccessToken
+				excluded[token] = true
+				if newClient, clientErr := s.newUpstreamClientForAccount(actualAccount); clientErr == nil {
+					client = newClient
+					items, client, err = s.generateImageWithReservedEgress(ctx, client, actualAccount, prompt, model, size, resolution, refs)
+				}
+			} else {
+				traceLogf(ctx, "│  ├─ reactive oauth refresh failed for image: %v", refErr)
 			}
 		}
 		s.accountPool.releaseToken(poolToken)

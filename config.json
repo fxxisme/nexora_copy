@@ -7,7 +7,7 @@
     "prompt": ""
   },
   "auth-key": "chatgpt2api",
-  "auto_remove_invalid_accounts": true,
+  "auto_remove_invalid_accounts": false,
   "auto_remove_rate_limited_accounts": false,
   "backup": {
     "access_key_id": "",

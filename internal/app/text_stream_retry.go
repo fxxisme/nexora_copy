@@ -100,6 +100,23 @@ func (s *Server) streamTextWithRetryMode(ctx context.Context, messages []map[str
 					err = runStream(fallback)
 				}
 			}
+			if !emitted && isInvalidTokenErrorText(err) && account.RefreshToken != nil && strings.TrimSpace(*account.RefreshToken) != "" {
+				traceLogf(ctx, "│  ├─ token 401 expired, attempting oauth refresh with rt")
+				ctxRefresh, cancel := context.WithTimeout(ctx, 45*time.Second)
+				refreshed, refErr := s.refreshOAuthAccount(ctxRefresh, account.AccessToken)
+				cancel()
+				if refErr == nil && refreshed.AccessToken != "" {
+					account = refreshed
+					token = refreshed.AccessToken
+					excluded[token] = true
+					if newClient, clientErr := s.newUpstreamClientForAccount(account); clientErr == nil {
+						client = newClient
+						err = runStream(client)
+					}
+				} else {
+					traceLogf(ctx, "│  ├─ reactive oauth refresh failed: %v", refErr)
+				}
+			}
 			s.accountPool.releaseToken(token)
 			if err == nil {
 				traceLogf(ctx, "└─ text account attempt %d success", attempt)
