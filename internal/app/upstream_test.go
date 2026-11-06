@@ -984,7 +984,12 @@ func TestImageModelSlug(t *testing.T) {
 		{model: "gpt-image-2.5", want: "auto"},
 		{model: "gpt-image-2.5-flare", want: "auto"},
 		{model: "gpt-image-2.5-sunburst", want: "auto"},
+		{model: "gpt-image-2.6", want: "auto"},
+		{model: "image-2.6", want: "auto"},
+		{model: "gpt-image-2.6-flare", want: "gpt-image-2.6-flare"},
+		{model: "gpt-image-2.6-sunburst", want: "gpt-image-2.6-sunburst"},
 		{model: "codex-gpt-image-2", want: "codex-gpt-image-2"},
+		{model: "codex-gpt-image-2.6", want: "codex-gpt-image-2.6"},
 	} {
 		if got := imageModelSlug(tc.model); got != tc.want {
 			t.Errorf("imageModelSlug(%q) = %q, want %q", tc.model, got, tc.want)
@@ -993,7 +998,7 @@ func TestImageModelSlug(t *testing.T) {
 }
 
 func TestSupportedImageModels(t *testing.T) {
-	for _, model := range []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "plus-codex-gpt-image-2"} {
+	for _, model := range []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "image-2.6", "plus-codex-gpt-image-2", "plus-codex-gpt-image-2.6"} {
 		if !isSupportedImageModel(model) {
 			t.Errorf("isSupportedImageModel(%q) = false", model)
 		}

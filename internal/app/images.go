@@ -40,6 +40,22 @@ func (s *Server) webdavClient() *WebDAVClient {
 	return s.cachedDAV
 }
 
+func detectImageFormat(data []byte) (mimeType, ext string) {
+	if len(data) >= 8 && bytes.Equal(data[:8], []byte("\x89PNG\r\n\x1a\n")) {
+		return "image/png", ".png"
+	}
+	if len(data) >= 6 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))) {
+		return "image/gif", ".gif"
+	}
+	if len(data) >= 3 && bytes.Equal(data[:3], []byte("\xff\xd8\xff")) {
+		return "image/jpeg", ".jpg"
+	}
+	if len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
+		return "image/webp", ".webp"
+	}
+	return "image/png", ".png"
+}
+
 func (s *Server) saveImage(r *http.Request, data []byte) (string, string, error) {
 	return s.saveImageWithBaseURL(s.baseURL(r), data)
 }
@@ -48,7 +64,8 @@ func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, stri
 	s.maybeCleanupOldImages()
 	sum := md5.Sum(data)
 	relDir := filepath.Join(time.Now().Format("2006"), time.Now().Format("01"), time.Now().Format("02"))
-	name := fmt.Sprintf("%d_%x.png", time.Now().Unix(), sum)
+	mimeType, ext := detectImageFormat(data)
+	name := fmt.Sprintf("%d_%x%s", time.Now().Unix(), sum, ext)
 	rel := filepath.ToSlash(filepath.Join(relDir, name))
 
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.ImageStorageMode))
@@ -90,10 +107,10 @@ func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, stri
 
 	// 4. 若开启了 WebDAV 或双写，在后台启动异步协程转存（彻底解除生图主链路对 WebDAV/云盘的网络阻塞）
 	if (mode == "webdav" || mode == "both") && client != nil {
-		go func(targetRel, targetLocalPath string, payload []byte, targetMode string) {
+		go func(targetRel, targetLocalPath string, payload []byte, targetMode, targetMime string) {
 			uploadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			if err := client.Put(uploadCtx, targetRel, payload, "image/png"); err != nil {
+			if err := client.Put(uploadCtx, targetRel, payload, targetMime); err != nil {
 				if s.logSvc != nil {
 					s.logSvc.add("system", "WebDAV图片异步备份失败", map[string]any{"rel": targetRel, "error": err.Error()})
 				}
@@ -114,7 +131,7 @@ func (s *Server) saveImageWithBaseURL(baseURL string, data []byte) (string, stri
 				}
 				return m
 			})
-		}(rel, localPath, data, mode)
+		}(rel, localPath, data, mode, mimeType)
 	}
 
 	imageURL := baseURL + "/images/" + rel
@@ -647,11 +664,15 @@ func (s *Server) handleImageModels(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"id": "gpt-image-2.5", "name": "GPT Image 2.5", "desc": "最新一代生图模型", "sourceType": "web"},
 			map[string]any{"id": "gpt-image-2.5-flare", "name": "GPT Image 2.5 Flare", "desc": "细节构图增强版", "sourceType": "web"},
 			map[string]any{"id": "gpt-image-2.5-sunburst", "name": "GPT Image 2.5 Sunburst", "desc": "色彩光影增强版", "sourceType": "web"},
+			map[string]any{"id": "gpt-image-2.6", "name": "GPT Image 2.6", "desc": "最新一代 2.6 绘图模型", "sourceType": "web"},
+			map[string]any{"id": "gpt-image-2.6-flare", "name": "GPT Image 2.6 Flare", "desc": "2.6 细节构图增强版", "sourceType": "web"},
+			map[string]any{"id": "gpt-image-2.6-sunburst", "name": "GPT Image 2.6 Sunburst", "desc": "2.6 色彩光影增强版", "sourceType": "web"},
 		)
 	}
 	if codexTypes["plus"] || codexTypes["team"] || codexTypes["pro"] {
 		items = append(items,
 			map[string]any{"id": "codex-gpt-image-2", "name": "Codex Image 2 (超清)", "desc": "Codex 专有通道，原生 2K/4K", "sourceType": "codex"},
+			map[string]any{"id": "codex-gpt-image-2.6", "name": "Codex Image 2.6 (超清)", "desc": "Codex 专有通道 2.6 版", "sourceType": "codex"},
 		)
 	}
 	writeJSON(w, 200, map[string]any{"items": items})

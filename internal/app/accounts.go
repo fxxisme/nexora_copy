@@ -418,6 +418,9 @@ func mergeAccount(dst *Account, src Account) {
 			}
 		}
 	}
+	if src.QuotaCheckedAt != "" {
+		dst.QuotaCheckedAt = src.QuotaCheckedAt
+	}
 	if dst.InitialQuota < dst.Quota {
 		dst.InitialQuota = dst.Quota
 	}
@@ -425,18 +428,23 @@ func mergeAccount(dst *Account, src Account) {
 
 func mergeRefreshedAccount(dst *Account, info Account) {
 	status := dst.Status
+	info.SourceType = ""
 	mergeAccount(dst, info)
-	if status == "异常" || status == "禁用" {
+	if status == "异常" || status == "禁用" || status == "封号" {
 		dst.Status = status
 	} else if status == "限流" {
 		if info.Status == "正常" && !info.ImageQuotaUnknown && info.Quota > 0 {
 			dst.Status = "正常"
-			dst.RestoreAt = nil
+			dst.RestoreAt = info.RestoreAt
 			dst.RateLimitedAt = nil
-			dst.RateLimitResetAt = nil
+			dst.RateLimitResetAt = info.RateLimitResetAt
 		} else {
 			dst.Status = "限流"
 		}
+	} else if info.Status == "正常" {
+		dst.ImageQuotaUnknown = info.ImageQuotaUnknown
+		dst.RestoreAt = info.RestoreAt
+		dst.RateLimitResetAt = info.RateLimitResetAt
 	}
 }
 
@@ -555,6 +563,7 @@ func (s *Server) refreshAccountInfo(ctx context.Context, a Account) error {
 		}
 	}
 	if err == nil {
+		info.QuotaCheckedAt = nowISO()
 		return s.applyAccountInfoRefresh(a, info)
 	}
 	if isInvalidTokenErrorText(err) {

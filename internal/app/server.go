@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +39,8 @@ type Server struct {
 	imageTasks          *imageTaskRunner
 	accountPool         *accountPool
 	accountRefreshJobs  accountRefreshJobs
+	quotaRefreshInterval atomic.Int64
+	quotaRefreshChanged  chan struct{}
 	logSvc              *logService
 	register            *registerService
 	oauthLogin          *oauthLoginManager

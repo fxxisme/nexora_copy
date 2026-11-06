@@ -1094,8 +1094,10 @@ func (s *Server) handleChatStreamImage(w http.ResponseWriter, r *http.Request, i
 	defer cancel()
 	proxyTracker := &imageProxyTracker{}
 	ctx = withImageProxyTracker(ctx, proxyTracker)
-	items, err := s.generateImageWithPool(ctx, prompt, model, strAny(b["size"], ""), strAny(b["resolution"], ""), extractChatImages(b))
 	w.Header().Set("Content-Type", "text/event-stream")
+	items, err := streamImageChatWithKeepalive(ctx, w, 15*time.Second, func() ([]upstreamImageResult, error) {
+		return s.generateImageWithPool(ctx, prompt, model, strAny(b["size"], ""), strAny(b["resolution"], ""), extractChatImages(b))
+	})
 	cid := "conv_" + randID(8)
 	if err != nil {
 		s.refundImage(id, 1)
@@ -1416,4 +1418,31 @@ func (s *Server) handleWeb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "service": "chatgpt2api-go", "hint": "web_dist/index.html not found; build frontend to enable SPA"})
+}
+
+func streamImageChatWithKeepalive(ctx context.Context, w http.ResponseWriter, interval time.Duration, generate func() ([]upstreamImageResult, error)) ([]upstreamImageResult, error) {
+	type result struct {
+		items []upstreamImageResult
+		err   error
+	}
+	results := make(chan result, 1)
+	fmt.Fprint(w, ": stream-open\n\n")
+	flushSSE(w)
+	go func() {
+		items, err := generate()
+		results <- result{items: items, err: err}
+	}()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case completed := <-results:
+			return completed.items, completed.err
+		case <-ticker.C:
+			fmt.Fprint(w, ": keep-alive\n\n")
+			flushSSE(w)
+		}
+	}
 }

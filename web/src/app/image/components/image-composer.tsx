@@ -480,7 +480,12 @@ export function ImageComposer({
                         <div className="mb-1 px-2 pt-1 text-[11px] font-medium text-stone-400">选择生图模型</div>
                         {(availableModels && availableModels.length > 0 ? availableModels : [
                           { id: "gpt-image-2", name: "GPT Image 2", desc: "标准高质量生图模型", sourceType: "web" },
-                          { id: "gpt-image-2.5", name: "GPT Image 2.5", desc: "新一代绘图模型，效果与指令遵循更佳", sourceType: "web" }
+                          { id: "gpt-image-2.5", name: "GPT Image 2.5", desc: "2.5 代绘图模型", sourceType: "web" },
+                          { id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", desc: "2.5 细节构图增强版", sourceType: "web" },
+                          { id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", desc: "2.5 色彩光影增强版", sourceType: "web" },
+                          { id: "gpt-image-2.6", name: "GPT Image 2.6", desc: "最新 2.6 代绘图模型", sourceType: "web" },
+                          { id: "gpt-image-2.6-flare", name: "GPT Image 2.6 Flare", desc: "2.6 细节构图增强版", sourceType: "web" },
+                          { id: "gpt-image-2.6-sunburst", name: "GPT Image 2.6 Sunburst", desc: "2.6 色彩光影增强版", sourceType: "web" },
                         ]).map((option) => {
                           const active = option.id === selectedModel;
                           return (
