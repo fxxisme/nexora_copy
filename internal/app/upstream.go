@@ -2132,9 +2132,6 @@ func normalizeTextModelOptions(model string) textModelOptions {
 
 func imageModelSlug(model string) string {
 	slug := normalizeImageModel(model)
-	if slug == "gpt-image-2.6-sunburst" || slug == "gpt-image-2.6-flare" {
-		return slug
-	}
 	if isCodexImageModel(slug) {
 		if strings.Contains(slug, "2.6") {
 			return "codex-gpt-image-2.6"
